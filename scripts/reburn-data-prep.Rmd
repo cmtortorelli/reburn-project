@@ -22,7 +22,7 @@ This script preps data for the CA reburn analysis
 
 Read in MTBS fire perims
 ```{r}
-mtbs_perims = vect(datadir("/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp"))
+mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp"))
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
 
