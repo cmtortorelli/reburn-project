@@ -26,19 +26,23 @@ Clean up MTBS fire perims
 mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269?)
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
+crs(mtbs_perims) = 'epsg:4269'
+mtbs_yr = mtbs_perims[,"YEAR"] #thought maybe the issue was that YEAR was not the first variable?
 
 #extract states of interest
 #load state boundaries
 states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp"))
 states = project(states, mtbs_perims)
-states = states[, "NAME"] #select name column
+# states = states[, "NAME"] #select name column
 ca = states[states$NAME == "California",]
 
 # Rasterize mtbs for easy extraction.  
-r = rast(mtbs_perims, resolution = 1, crs = '+init=EPSG:4269') 
+r = rast(mtbs_yr, resolution = 0.000001, crs = 'epsg:4269') #resolution is super coarse! #not filling in YEAR values?
+
+#crs(r) == crs(mtbs_perims)
 
 mtbs_ca = extract(r, ca)
-#---------------not sure why this isn't working.. Error- raster has no value
+#---------------not sure why this isn't working.. Error- raster has no value - should have same projection..
 
 
 #When two fires overlap, keep the year of the most recent and second most recent
@@ -55,5 +59,3 @@ secondrecent_fire = rasterize(mtbs_perims,r, field="YEAR", fun=second_highest_fu
 ## Bring in the important 2021/2022 fires
 ```
 
-#assign states to perimeters
-state_bnds = read_sf(datadir("/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp"))
