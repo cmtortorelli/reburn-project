@@ -20,40 +20,39 @@ source(here("scripts/convenience_functions.R"))
 
 This script preps data for the CA reburn analysis
 
-Read in MTBS fire perims
+Clean up MTBS fire perims
 ```{r}
-mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp"))
+#load mtbs data
+mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269?)
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
 
-# Rasterize it for easy extraction. 
-r = rast(mtbs_perims, resolution=50,crs="+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +x_0=0 +y_0=-4000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+#extract states of interest
+#load state boundaries
+states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp"))
+states = project(states, mtbs_perims)
+states = states[, "NAME"] #select name column
+ca = states[states$NAME == "California",]
+
+# Rasterize mtbs for easy extraction.  
+r = rast(mtbs_perims, resolution = 1, crs = '+init=EPSG:4269') 
+
+mtbs_ca = extract(r, ca)
+#---------------not sure why this isn't working.. Error- raster has no value
+
 
 #When two fires overlap, keep the year of the most recent and second most recent
-mostrecent_fire = rasterize(mtbs_perims,r, field="Ig_Date", fun=max)
+mostrecent_fire = rasterize(mtbs_perims, r, field= "YEAR", fun=max)
 
 #function to extract second most recent fire 
 second_highest_func = function(x) {
   max(x[x != max(x)])    
 }
 
-secondrecent_fire = rasterize(mtbs_perims,r, field="Ig_Date", fun=second_highest_func)
+secondrecent_fire = rasterize(mtbs_perims,r, field="YEAR", fun=second_highest_func)
 
 
-## Bring in the important 2021 fires (Caldor and Dixie), rasterize them too
-
-# caldor = vect(datadir("fire-perims/ca3858612053820210815_20201011_20211016_ravg_data/ca3858612053820210815_20201011_20211016/CA3858612053820210815.kml"))
-# caldor = project(caldor,r)
-# caldor$year = 2021
-# caldor_rast = rasterize(caldor,r,field="year", fun=max)
-# dixie = vect(datadir("fire-perims/ca3987612137920210714_20201012_20211015_ravg_data/ca3987612137920210714_20201012_20211015/CA3987612137920210714.kml"))
-# dixie = project(dixie,r)
-# dixie$year = 2021
-# dixie_rast = rasterize(dixie,r,field="year", fun=max)
-
-## Stack the fires and get the most recent year of fire for each pixel, accounting for 2021 fires too
-# fire_hist = c(mostrecent_fire,caldor_rast,dixie_rast)
-# fire_hist = max(fire_hist, na.rm=TRUE)
+## Bring in the important 2021/2022 fires
 ```
 
 #assign states to perimeters
