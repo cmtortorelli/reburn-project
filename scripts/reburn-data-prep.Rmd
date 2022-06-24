@@ -23,14 +23,13 @@ This script preps data for the CA reburn analysis
 
 # Organize MTBS data
 
-### rasterize mtbs fire perims and add year
+load mtbs data
 ```{r}
 #load mtbs data
-mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269?)
+mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269)
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
 crs(mtbs_perims) = 'epsg:4269'
-# mtbs_yr = mtbs_perims[,"YEAR"] #thought maybe the issue was that YEAR was not the first variable?
 ```
 
 
@@ -40,13 +39,16 @@ Questions:
 
 >Restrict analysis to western forest ecoregions? or include all forested areas even if outside a "forest" ecoregion?
 
+>Include wildfires and prescribed fires?
+
 >Subset to forest service land before processing? Or after we have reburned areas isolated?
 
 ```{r}
 
 #extract states of interest
 #load state boundaries
-states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp"))
+states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp")) #<- bring these in with sf for vector data!
+
 states = project(states, mtbs_perims)
 
 #intersect states and mtbs perims - this is kind of slow
@@ -73,7 +75,11 @@ mtbs_ca1 = intersect(mtbs_ca, z[1,])
 ```
 
 ### Extract reburned areas
+```{r}
+#create a new SpatVector for each fire year
+mtbs_ca1_split = terra::split(mtbs_ca1, "YEAR")
 
+```
 
 ```{r}
 mtbs_ca1_union = union(mtbs_ca1) #this drops attributes so not sure how to get just reburned areas? Maybe do this in Arc and bring in mtbs shapefile after union?
@@ -83,7 +89,8 @@ plot(mtbs_ca1_union, col=sample(rainbow(length(mtbs_ca1_union))))
 
 
 ```{r}
-# Rasterize mtbs for easy extraction.  
+# Rasterize mtbs for easy extraction.  - better to use project coordinate system - use equal are conical - epsg:
+
 r = rast(mtbs_ca, resolution = 0.0001, crs = 'epsg:4269')  #not sure what resolution this is in m? - aiming for 30m resolution
 ```
 
@@ -110,14 +117,12 @@ Bring in the important 2021/2022 fires
 ## 
 ```
 
-# Remove areas outside of federal land (or all usfs land?)
+Questions
+> Remove areas outside of federal land (or all usfs land?)
 
+> Remove areas that burned in smaller fires more recently (2021/2022)?
 
-# Remove areas that burned in smaller fires more recently?
+> Consider management? include prescribed fires and wildfires?
 
-
-# Consider management?
-
-
-# Look at daily fire progress to assess influence of weather (like in Taylor et al 2021?) Could use FIRED for this? https://scholar.colorado.edu/concern/datasets/d504rm74m
+> Look at daily fire progress to assess influence of weather (like in Taylor et al 2021?) Could use FIRED for this? https://scholar.colorado.edu/concern/datasets/d504rm74m
 
