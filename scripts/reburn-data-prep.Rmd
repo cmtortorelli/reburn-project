@@ -20,42 +20,49 @@ source(here("scripts/convenience_functions.R"))
 
 This script preps data for the CA reburn analysis
 
-Clean up MTBS fire perims
+## Organize MTBS data
+
+rasterize mtbs fire perims and add year
 ```{r}
 #load mtbs data
 mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269?)
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
 crs(mtbs_perims) = 'epsg:4269'
-mtbs_yr = mtbs_perims[,"YEAR"] #thought maybe the issue was that YEAR was not the first variable?
+# mtbs_yr = mtbs_perims[,"YEAR"] #thought maybe the issue was that YEAR was not the first variable?
 
 #extract states of interest
 #load state boundaries
 states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp"))
 states = project(states, mtbs_perims)
+
+#intersect states and mtbs perims - this is kind of slow
+mtbs_states = intersect(mtbs_perims, states)
+
+#extract just CA for initial analysis
 # states = states[, "NAME"] #select name column
-ca = states[states$NAME == "California",]
+mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 
 # Rasterize mtbs for easy extraction.  
-r = rast(mtbs_yr, resolution = 0.000001, crs = 'epsg:4269') #resolution is super coarse! #not filling in YEAR values?
+r = rast(mtbs_ca, resolution = 0.001, crs = 'epsg:4269') 
+```
 
-#crs(r) == crs(mtbs_perims)
-
-mtbs_ca = extract(r, ca)
-#---------------not sure why this isn't working.. Error- raster has no value - should have same projection..
-
-
+Extract most recent and second most recent fires
+```{r}
 #When two fires overlap, keep the year of the most recent and second most recent
-mostrecent_fire = rasterize(mtbs_perims, r, field= "YEAR", fun=max)
+mostrecent_fire = rasterize(mtbs_ca, r, field="YEAR", fun=max)
 
 #function to extract second most recent fire 
-second_highest_func = function(x) {
+second_recent_func = function(x) {
   max(x[x != max(x)])    
 }
 
-secondrecent_fire = rasterize(mtbs_perims,r, field="YEAR", fun=second_highest_func)
+secondrecent_fire = rasterize(mtbs_ca,r, field="YEAR", fun=second_recent_func)
 
+```
 
-## Bring in the important 2021/2022 fires
+Bring in the important 2021/2022 fires
+```{r}
+## 
 ```
 
