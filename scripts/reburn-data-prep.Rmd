@@ -12,6 +12,8 @@ library(here)
 library(sf)
 library(readxl)
 library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
 
 data_dir = readLines(here("data_dir.txt"), n=1)
 source(here("scripts/convenience_functions.R"))
@@ -20,28 +22,33 @@ source(here("scripts/convenience_functions.R"))
 
 This script preps data for the CA reburn analysis
 
-
 # Organize MTBS data
 
 load mtbs data
+
 ```{r}
 #load mtbs data
 mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269)
 #add fire year
 mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4)) 
-crs(mtbs_perims) = 'epsg:4269'
+#DY: This line isn't necessary since the correct CRS is stored in the shapefile: crs(mtbs_perims) = 'epsg:4269'
 ```
 
-
-### Subset analysis for faster processing - CA  
+### Subset analysis for faster processing - CA
 
 Questions:
 
->Restrict analysis to western forest ecoregions? or include all forested areas even if outside a "forest" ecoregion?
+> Restrict analysis to western forest ecoregions? or include all forested areas even if outside a "forest" ecoregion?
 
->Include wildfires and prescribed fires?
+DY: I'd say all forest but don't feel super strongly.
 
->Subset to forest service land before processing? Or after we have reburned areas isolated?
+> Include wildfires and prescribed fires?
+
+DY: How about prescribed fires can count for the first fire, but never the second one (the one we're assessing/predicting the severity of)?
+
+> Subset to forest service land before processing? Or after we have reburned areas isolated?
+
+DY: I'd say after.
 
 ```{r}
 
@@ -59,10 +66,11 @@ mtbs_states = intersect(mtbs_perims, states)
 mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 
 #grid out CA and subset
+#DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
 
 z <- rast(mtbs_ca)
-dim(z) <- c(4,4)
-values(z) <- 1:16
+dim(z) <- c(5,5)
+values(z) <- 1:25
 names(z) <- 'Zone'
 # coerce SpatRaster to SpatVector polygons
 z <- as.polygons(z)
@@ -75,6 +83,7 @@ mtbs_ca1 = intersect(mtbs_ca, z[1,])
 ```
 
 ### Extract reburned areas
+
 ```{r}
 #create a new SpatVector for each fire year
 mtbs_ca1_split = terra::split(mtbs_ca1, "YEAR")
@@ -82,47 +91,50 @@ mtbs_ca1_split = terra::split(mtbs_ca1, "YEAR")
 ```
 
 ```{r}
-mtbs_ca1_union = union(mtbs_ca1) #this drops attributes so not sure how to get just reburned areas? Maybe do this in Arc and bring in mtbs shapefile after union?
-
-plot(mtbs_ca1_union, col=sample(rainbow(length(mtbs_ca1_union)))) 
+# mtbs_ca1_union = union(mtbs_ca1) #this drops attributes so not sure how to get just reburned areas? Maybe do this in Arc and bring in mtbs shapefile after union? #  # plot(mtbs_ca1_union, col=sample(rainbow(length(mtbs_ca1_union))))
 ```
-
 
 ```{r}
 # Rasterize mtbs for easy extraction.  - better to use project coordinate system - use equal are conical - epsg:
 
-r = rast(mtbs_ca, resolution = 0.0001, crs = 'epsg:4269')  #not sure what resolution this is in m? - aiming for 30m resolution
+r = rast(mtbs_ca1, resolution = 0.0001, crs = 'epsg:4269')  #not sure what resolution this is in m? - aiming for 30m resolution
 ```
 
-Extract most recent and second most recent fires - *These still look identical, I'm not sure what's going on here
 ```{r}
-#When two fires overlap, keep the year of the most recent and second most recent
-mostrecent_fire = rasterize(mtbs_ca, r, field="YEAR", fun=max)
+
+tic()
+mostrecent_fire = raster::rasterize(mtbs_ca1 %>% as("Spatial"), r %>% raster, field="YEAR", fun=max)
+toc()
 
 #function to extract second most recent fire 
-second_recent_func = function(x) {
-  max(x[x != max(x)])    
+second_recent_func = function(x, na.rm) {
+  x = x[!is.na(x)]
+  if(length(x) == 0) { return(NA) }
+  x_nomax = x[x != max(x)]
+  if (length(x_nomax) == 0) { return(NA) }
+  second_recent =  max(x_nomax)
+  return(second_recent)
 }
 
-secondrecent_fire = rasterize(mtbs_ca,r, field="YEAR", fun=second_recent_func) #these still look identical? 
+tic()
+secondrecent_fire = raster::rasterize(mtbs_ca1 %>% as("Spatial"), r %>% raster, field="YEAR", fun=second_recent_func)
+toc()
+
 
 ```
 
-Is it time to bring in points for extracting fire years?
+Is it time to bring in points for extracting fire years? DY: My initial thought is to get all the other (raster) data layers perpared first, then extract raster values to points all at once.
 
+Bring in the important 2021/2022 fires DY: Potentially bring these in earlier, adding to the MTBS perimeter dataset before rasterizing it.
 
-
-Bring in the important 2021/2022 fires
 ```{r}
 ## 
 ```
 
-Questions
-> Remove areas outside of federal land (or all usfs land?)
+Questions \> Remove areas outside of federal land (or all usfs land?) DY: Yes, I think for first pass, remove outside of USFS, but only after extracting everything to points (to enable expansion later)
 
-> Remove areas that burned in smaller fires more recently (2021/2022)?
+> Remove areas that burned in smaller fires more recently (2021/2022)? DY: Yes, and also earlier I think, since that could affect the burn sev of the recent fires.
 
-> Consider management? include prescribed fires and wildfires?
+> Consider management? include prescribed fires and wildfires? DY: I think yes! Could treat prescribed fire as the first fire OR exclude treated areas entirely. For now, extract year of most recent prescribed fire and thinning.
 
-> Look at daily fire progress to assess influence of weather (like in Taylor et al 2021?) Could use FIRED for this? https://scholar.colorado.edu/concern/datasets/d504rm74m
-
+> Look at daily fire progress to assess influence of weather (like in Taylor et al 2021?) Could use FIRED for this? <https://scholar.colorado.edu/concern/datasets/d504rm74m> DY: Or use my adapted Parks code here: <https://github.com/youngdjn/2020-wildfire-mapping/blob/main/scripts/Parks_DOB_interpolation.R>
