@@ -7,6 +7,7 @@ date: '2022-06-03'
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(data.table)
+library(lubridate)
 library(tidyverse)
 library(here)
 library(rgdal)
@@ -66,6 +67,40 @@ Subset dataset further for processing
 #grid out CA and subset
 #DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
 
+#rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
+# //       Fire_ID        unique identifier for each fire 
+# //       Fire_Year      year of fire
+# //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
+# //       End_Day        end day of fire season in julian days
+
+# mtbs_ca_gee = mtbs_ca
+# mtbs_ca_gee$Fire_ID = mtbs_ca_gee$Event_ID
+# mtbs_ca_gee$Fire_Year = mtbs_ca_gee$YEAR
+# 
+# mtbs_ca_gee$Start_Day = yday(mtbs_ca_gee$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
+# mtbs_ca_gee$End_Day = 273
+# 
+# mtbs_ca_gee = mtbs_ca_gee[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
+# 
+# #larger grid for GEE
+# z2 <- rast(mtbs_ca_gee)
+# 
+# dim(z2) <- c(2,1)
+# values(z2) <- 1:2
+# names(z2) <- 'Zone'
+# z2 <- as.polygons(z2)
+# bz2 <- buffer(z2, width=300)
+# mtbs_ca_z1 = terra::intersect(mtbs_ca_gee, z2[1,1])
+# mtbs_ca_z2 = terra::intersect(mtbs_ca_gee, z2[2,1])
+# 
+# # plot(mtbs_ca_z1)
+# writeVector(mtbs_ca_z2, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z2.shp"))
+# writeVector(mtbs_ca_z1, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z1.shp"))
+
+```
+
+smaller grid for R
+```{r}
 z <- rast(mtbs_ca)
 dim(z) <- c(5,5)
 values(z) <- 1:25
