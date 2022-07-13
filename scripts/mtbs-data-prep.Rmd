@@ -11,6 +11,7 @@ library(lubridate)
 library(tidyverse)
 library(here)
 library(rgdal)
+library(rgeos)
 library(sp)
 library(sf)
 library(readxl)
@@ -49,7 +50,7 @@ states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state
 states = project(states, mtbs_perims)
 
 #intersect states and mtbs perims - this is kind of slow
-mtbs_states = intersect(mtbs_perims, states)
+mtbs_states = terra::intersect(mtbs_perims, states)
 
 #extract just CA for initial analysis
 # states = states[, "NAME"] #select name column
@@ -60,7 +61,47 @@ mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 newcrs = "epsg:26910"
 mtbs_ca = project(mtbs_ca, newcrs)
 
+
 ```
+
+remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
+```{r}
+#load ca fs land spatial data
+fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
+# plot(fs)
+fs = project(fs, newcrs) #project to UTMs
+
+fs_sf = sf::st_as_sf(fs)
+mtbs_ca_sf = sf::st_as_sf(mtbs_ca)
+
+
+# intersect - note that sf is intelligent with attribute data!
+fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf)
+# plot(mtbs_ca_sf$geometry, axes = TRUE)
+# plot(fs_mtbs_int$geometry, add = TRUE, col = 'red')
+
+# add in areas in m2
+fs_area <- fs_mtbs_int %>% 
+  mutate(area = st_area(.) %>% as.numeric())
+
+# for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
+fs_area = fs_area %>% 
+  as_tibble() %>% 
+  group_by(Event_ID, OWNERCLASSIFICATION) %>% 
+  summarize(area = sum(area)) %>%
+  filter(area >= 500000)
+
+#select fire perims that >= 50ha identified in fs_area
+fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+
+#some summary stats/data vis
+# fs_mtbs_ca %>% data.frame() %>% 
+#   group_by(YEAR) %>% 
+#   summarise(acres_yr = sum(BurnBndAc)) %>% 
+#   plot(acres_yr ~ YEAR)
+```
+
+
 
 Subset dataset further for processing
 ```{r}
@@ -68,14 +109,14 @@ Subset dataset further for processing
 #DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
 
 #rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
-# //       Fire_ID        unique identifier for each fire 
+# //       Fire_ID        unique identifier for each fire
 # //       Fire_Year      year of fire
 # //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
 # //       End_Day        end day of fire season in julian days
 
-# mtbs_ca_gee = mtbs_ca
+# mtbs_ca_gee = fs_mtbs_ca
 # mtbs_ca_gee$Fire_ID = mtbs_ca_gee$Event_ID
-# mtbs_ca_gee$Fire_Year = mtbs_ca_gee$YEAR
+# mtbs_ca_gee$Fire_Year = as.integer(mtbs_ca_gee$YEAR)
 # 
 # mtbs_ca_gee$Start_Day = yday(mtbs_ca_gee$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
 # mtbs_ca_gee$End_Day = 273
@@ -85,23 +126,27 @@ Subset dataset further for processing
 # #larger grid for GEE
 # z2 <- rast(mtbs_ca_gee)
 # 
-# dim(z2) <- c(2,1)
-# values(z2) <- 1:2
+# dim(z2) <- c(2,2)
+# values(z2) <- 1:4
 # names(z2) <- 'Zone'
 # z2 <- as.polygons(z2)
 # bz2 <- buffer(z2, width=300)
-# mtbs_ca_z1 = terra::intersect(mtbs_ca_gee, z2[1,1])
-# mtbs_ca_z2 = terra::intersect(mtbs_ca_gee, z2[2,1])
+# mtbs_ca_z1 = terra::intersect(mtbs_ca_gee, z2[1,])
+# mtbs_ca_z2 = terra::intersect(mtbs_ca_gee, z2[2,])
+# mtbs_ca_z3 = terra::intersect(mtbs_ca_gee, z2[3,])
+# mtbs_ca_z4 = terra::intersect(mtbs_ca_gee, z2[4,])
 # 
 # # plot(mtbs_ca_z1)
 # writeVector(mtbs_ca_z2, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z2.shp"))
 # writeVector(mtbs_ca_z1, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z1.shp"))
+# writeVector(mtbs_ca_z3, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z3.shp"))
+# writeVector(mtbs_ca_z4, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z4.shp"))
 
 ```
 
 smaller grid for R
 ```{r}
-z <- rast(mtbs_ca)
+z <- rast(fs_mtbs_ca)
 dim(z) <- c(5,5)
 values(z) <- 1:25
 names(z) <- 'Zone'
@@ -112,11 +157,11 @@ z <- as.polygons(z)
 bz <- buffer(z, width=300) 
 
 # plot(bz)
-# plot(mtbs_ca, add = TRUE)
+# plot(fs_mtbs_ca, add = TRUE)
 
 
 #extract mtbs data from one zone for faster processing
-mtbs_ca1 = intersect(mtbs_ca, z[1,])
+mtbs_ca1 = intersect(fs_mtbs_ca, z[1,])
 
 
 ```
