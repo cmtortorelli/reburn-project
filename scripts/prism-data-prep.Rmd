@@ -30,19 +30,19 @@ source(here("scripts/convenience_functions.R"))
 prism_set_dl_dir(datadir("raw-data/prismtmp"))
 ```
 
-download prism data
+download prism data - this didn't work, downloading manually from the prism site
 ```{r}
 #monthlys
-get_prism_monthlys(type = "tmean", year = 1987:2021, mon = 1:12, keepZip = FALSE)
-get_prism_monthlys(type = "ppt", year = 1987:2021, mon = 1:12, keepZip = FALSE)
-get_prism_monthlys(type = "vpdmax", year = 1987:2021, mon = 1:12, keepZip = FALSE)
-get_prism_monthlys(type = "vpdmin", year = 1987:2021, mon = 1:12, keepZip = FALSE)
-
-#30-yr annual normals
-get_prism_normals(type="tmean", resolution = "800m", mon = 1:12, keepZip = FALSE)
-get_prism_normals(type="ppt", resolution = "800m", mon = 1:12, keepZip = FALSE)
-get_prism_normals(type="vpdmax", resolution = "800m", mon = 1:12, keepZip = FALSE)
-get_prism_normals(type="vpdmin", resolution = "800m", mon = 1:12, keepZip = FALSE)
+# get_prism_monthlys(type = "tmean", year = 1987:2021, mon = 1:12, keepZip = FALSE)
+# get_prism_monthlys(type = "ppt", year = 1987:2021, mon = 1:12, keepZip = FALSE)
+# get_prism_monthlys(type = "vpdmax", year = 1987:2021, mon = 1:12, keepZip = FALSE)
+# get_prism_monthlys(type = "vpdmin", year = 1987:2021, mon = 1:12, keepZip = FALSE)
+# 
+# #30-yr annual normals
+# get_prism_normals(type="tmean", resolution = "800m", mon = 1:12, keepZip = FALSE)
+# get_prism_normals(type="ppt", resolution = "800m", mon = 1:12, keepZip = FALSE)
+# get_prism_normals(type="vpdmax", resolution = "800m", mon = 1:12, keepZip = FALSE)
+# get_prism_normals(type="vpdmin", resolution = "800m", mon = 1:12, keepZip = FALSE)
 ```
 
 subset

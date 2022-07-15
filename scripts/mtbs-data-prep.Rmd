@@ -30,7 +30,7 @@ This script preps MTBS data for the CA reburn analysis
 
 load mtbs data
 
-```{r}
+```{r load data}
 #load mtbs data
 mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_perims_DD.shp")) #Mercator (EPSG: 4269)
 
@@ -39,9 +39,10 @@ mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4))
 #DY: This line isn't necessary since the correct CRS is stored in the shapefile: crs(mtbs_perims) = 'epsg:4269'
 ```
 
-### Subset analysis for faster processing - CA
+### Subset data for faster processing - CA
 
-```{r}
+Subset by state
+```{r subset data  by state}
 
 #extract states of interest
 #load state boundaries
@@ -49,7 +50,7 @@ states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state
 
 states = project(states, mtbs_perims)
 
-#intersect states and mtbs perims - this is kind of slow
+#intersect states and mtbs perims - this takes a few seconds
 mtbs_states = terra::intersect(mtbs_perims, states)
 
 #extract just CA for initial analysis
@@ -61,11 +62,112 @@ mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 newcrs = "epsg:26910"
 mtbs_ca = project(mtbs_ca, newcrs)
 
+```
+
+
+
+Prep perims for GEE cbi extraction and subset by year
+```{r gee prep}
+#grid out CA and subset
+#DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
+
+#rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
+# //       Fire_ID        unique identifier for each fire
+# //       Fire_Year      year of fire
+# //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
+# //       End_Day        end day of fire season in julian days
+
+mtbs_ca$Fire_ID = mtbs_ca$Event_ID
+mtbs_ca$Fire_Year = as.integer(mtbs_ca$YEAR)
+
+mtbs_ca$Start_Day = yday(mtbs_ca$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
+mtbs_ca$End_Day = 273
+
+mtbs_ca = mtbs_ca[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
+
+#remove fires from 1984 because we don't have pre-fire imagery
+mtbs_ca_85 = mtbs_ca[which(mtbs_ca$Fire_Year > 1985),]
+```
+
+tile mtbs data for faster processing
+```{r tiling}
+#larger grid for GEE
+z <- rast(mtbs_ca_85)
+
+dim(z) <- c(5,5)
+values(z) <- 1:25
+names(z) <- 'Zone'
+z <- as.polygons(z) # coerce SpatRaster to SpatVector polygons
+bz <- buffer(z, width=300) # add 300m buffer around zones
+
+#create a list of zone names
+zones <- paste("mtbs_ca_z",1:25, sep = "")
+zone_list <- vector(mode="list", length = 25)
+names(zone_list) = zones
+
+#create mtbs variable for each zone with 300m buffer
+for (i in 1:length(bz)){
+  zone_list[[i]] <- terra::intersect(mtbs_ca_85, bz[i,])
+}
+
+#remove mtbs zones with no fires leaving 17 zones to run
+zone_list <- zone_list[sapply(zone_list, function(x) length(x) > 0)]
 
 ```
 
-remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
+save shapefiles
+```{r save shps, eval = FALSE}
+#save mtbs zones as shapefiles
+lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], 
+                                      file = datadir( paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/", 
+                                                             names(zone_list[i]), ".shp")),
+                                      overwrite = TRUE))
+plot(zone_list[[1])
+```
+
+----
+## Mapping reburned areas
+
+
+Rasterize mtbs for easy extraction
 ```{r}
+# Rasterize mtbs for easy extraction.  - need to use project coordinate system - like Albers equal area conical 
+# Equal Area Conus Albers. - epsg:5070
+
+
+r = rast(zone_list[[1]], resolution = 30, crs = "epsg:26910")
+
+```
+
+Extract data on the most recent and second most recent fires
+```{r extract most recent fires}
+
+tic()
+mostrecent_fire = raster::rasterize(zone_list[[1]] %>% as("Spatial"), r %>% raster(), field="Fire_Year", fun=max)
+toc()
+
+#function to extract second most recent fire 
+second_recent_func = function(x, na.rm) {
+  x = x[!is.na(x)]
+  if(length(x) == 0) { return(NA) }
+  x_nomax = x[x != max(x)]
+  if (length(x_nomax) == 0) { return(NA) }
+  second_recent =  max(x_nomax)
+  return(second_recent)
+}
+
+tic()
+secondrecent_fire = raster::rasterize(zone_list[[1]] %>% as("Spatial"), r %>% raster, field="Fire_Year", fun=second_recent_func)
+toc()
+#~2.3 mins at 30m res
+
+```
+
+---------------------------------------------------------------------------------
+# Subset by FS land
+
+remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
+```{r FS land, eval = FALSE}
 #load ca fs land spatial data
 fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
 # plot(fs)
@@ -101,113 +203,12 @@ fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
 #   plot(acres_yr ~ YEAR)
 ```
 
-
-
-Subset dataset further for processing
-```{r}
-#grid out CA and subset
-#DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
-
-#rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
-# //       Fire_ID        unique identifier for each fire
-# //       Fire_Year      year of fire
-# //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
-# //       End_Day        end day of fire season in julian days
-
-# mtbs_ca_gee = fs_mtbs_ca
-# mtbs_ca_gee$Fire_ID = mtbs_ca_gee$Event_ID
-# mtbs_ca_gee$Fire_Year = as.integer(mtbs_ca_gee$YEAR)
-# 
-# mtbs_ca_gee$Start_Day = yday(mtbs_ca_gee$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
-# mtbs_ca_gee$End_Day = 273
-# 
-# mtbs_ca_gee = mtbs_ca_gee[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
-# 
-# #larger grid for GEE
-# z2 <- rast(mtbs_ca_gee)
-# 
-# dim(z2) <- c(2,2)
-# values(z2) <- 1:4
-# names(z2) <- 'Zone'
-# z2 <- as.polygons(z2)
-# bz2 <- buffer(z2, width=300)
-# mtbs_ca_z1 = terra::intersect(mtbs_ca_gee, z2[1,])
-# mtbs_ca_z2 = terra::intersect(mtbs_ca_gee, z2[2,])
-# mtbs_ca_z3 = terra::intersect(mtbs_ca_gee, z2[3,])
-# mtbs_ca_z4 = terra::intersect(mtbs_ca_gee, z2[4,])
-# 
-# # plot(mtbs_ca_z1)
-# writeVector(mtbs_ca_z2, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z2.shp"))
-# writeVector(mtbs_ca_z1, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z1.shp"))
-# writeVector(mtbs_ca_z3, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z3.shp"))
-# writeVector(mtbs_ca_z4, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones_for_GEE/mtbs_ca_z4.shp"))
-
-```
-
-smaller grid for R
-```{r}
-z <- rast(fs_mtbs_ca)
-dim(z) <- c(5,5)
-values(z) <- 1:25
-names(z) <- 'Zone'
-# coerce SpatRaster to SpatVector polygons
-z <- as.polygons(z)
-
-# add 300m buffer around zones
-bz <- buffer(z, width=300) 
-
-# plot(bz)
-# plot(fs_mtbs_ca, add = TRUE)
-
-
-#extract mtbs data from one zone for faster processing
-mtbs_ca1 = intersect(fs_mtbs_ca, z[1,])
-
-
-```
-
-
-----
-## Mapping reburned areas
-
-
-Rasterize mtbs for easy extraction
-```{r}
-# Rasterize mtbs for easy extraction.  - need to use project coordinate system - like Albers equal area conical 
-# Equal Area Conus Albers. - epsg:5070
-
-
-r = rast(mtbs_ca1, resolution = 30, crs = "epsg:26910")
-
-```
-
-Extract data on the most recent and second most recent fires
-```{r}
-
-tic()
-mostrecent_fire = raster::rasterize(mtbs_ca1 %>% as("Spatial"), r %>% raster(), field="YEAR", fun=max)
-toc()
-
-#function to extract second most recent fire 
-second_recent_func = function(x, na.rm) {
-  x = x[!is.na(x)]
-  if(length(x) == 0) { return(NA) }
-  x_nomax = x[x != max(x)]
-  if (length(x_nomax) == 0) { return(NA) }
-  second_recent =  max(x_nomax)
-  return(second_recent)
-}
-
-tic()
-secondrecent_fire = raster::rasterize(mtbs_ca1 %>% as("Spatial"), r %>% raster, field="YEAR", fun=second_recent_func)
-toc()
-#~2.3 mins at 30m res
-
-```
+------------------------------------------------------------------------------------
+# point method 
 
 Create grid of points for extracting data to 
 *this is really slow at 30m resolution!!
-```{r}
+```{r point grid, eval = FALSE}
 ## create a grid of points
 tic()
 grdpts = sf::st_make_grid(mtbs_ca1, cellsize = 30, what = "centers")
