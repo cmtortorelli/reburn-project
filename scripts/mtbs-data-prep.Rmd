@@ -39,6 +39,63 @@ mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4))
 #DY: This line isn't necessary since the correct CRS is stored in the shapefile: crs(mtbs_perims) = 'epsg:4269'
 ```
 
+
+Prep perims for GEE cbi extraction and subset by year
+```{r gee prep}
+#grid out CA and subset
+#DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
+
+#rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
+# //       Fire_ID        unique identifier for each fire
+# //       Fire_Year      year of fire
+# //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
+# //       End_Day        end day of fire season in julian days
+
+mtbs_perims$Fire_ID = mtbs_perims$Event_ID
+mtbs_perims$Fire_Year = as.integer(mtbs_perims$YEAR)
+
+mtbs_perims$Start_Day = yday(mtbs_perims$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
+mtbs_perims$End_Day = 273
+
+mtbs_perims = mtbs_perims[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
+
+#remove fires from 1984 because we don't have pre-fire imagery
+mtbs_perims = mtbs_perims[which(mtbs_perims$Fire_Year > 1985),]
+```
+
+
+bring in 2021 fires >100ac
+```{r load 2021 fires}
+#load mtbs data
+perims21 = vect(datadir("/raw-data/fire-perims/WFIGS-Wildland_Fire_perims_full_history_7_18_22.gdb")) # (EPSG: 4326)
+
+#set crs
+crs(perims21) <- crs(mtbs_perims)
+
+#add relevant columns to match mtbs data for gee
+perims21$Fire_Year = as.integer(as.numeric(substr(as.character(perims21$irwin_FireDiscoveryDateTime), 1,4))) 
+perims21$Fire_ID = perims21$irwin_UniqueFireIdentifier
+
+perims21$Start_Day = yday(perims21$irwin_FireDiscoveryDateTime) #Q: not sure if this should be actual start date or average?
+perims21$End_Day = 273 #Q: not sure if this should be containment date (not available in mtbs) or average?
+
+#keep only 2021 fires because these aren't included in mtbs
+perims21 = perims21[which(perims21$Fire_Year == 2021),]
+
+#remove fires <1000 ac
+perims21 = perims21[which(perims21$irwin_CalculatedAcres >1000),] #area reported in in acres
+
+
+perims21 = perims21[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
+```
+
+bind mtbs and 2021 IRWIN fire perims >1000 acres
+```{r bind perims}
+mtbs_perims21 = rbind(mtbs_perims, perims21)
+```
+
+
+
 ### Subset data for faster processing - CA
 
 Subset by state
@@ -48,10 +105,10 @@ Subset by state
 #load state boundaries
 states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state_20m.shp")) 
 
-states = project(states, mtbs_perims)
+states = project(states, mtbs_perims21)
 
 #intersect states and mtbs perims - this takes a few seconds
-mtbs_states = terra::intersect(mtbs_perims, states)
+mtbs_states = terra::intersect(mtbs_perims21, states)
 
 #extract just CA for initial analysis
 # states = states[, "NAME"] #select name column
@@ -65,29 +122,6 @@ mtbs_ca = project(mtbs_ca, newcrs)
 ```
 
 
-
-Prep perims for GEE cbi extraction and subset by year
-```{r gee prep}
-#grid out CA and subset
-#DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
-
-#rename mtbs cols for GEE - following Parks et al 2019 GEE code for calculating CBI
-# //       Fire_ID        unique identifier for each fire
-# //       Fire_Year      year of fire
-# //       Start_Day      start day of fire season in julian days, e.g. June 15 = 166
-# //       End_Day        end day of fire season in julian days
-
-mtbs_ca$Fire_ID = mtbs_ca$Event_ID
-mtbs_ca$Fire_Year = as.integer(mtbs_ca$YEAR)
-
-mtbs_ca$Start_Day = yday(mtbs_ca$Ig_Date) #Q: not sure if this should be actual start date or average for CA?
-mtbs_ca$End_Day = 273
-
-mtbs_ca = mtbs_ca[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
-
-#remove fires from 1984 because we don't have pre-fire imagery
-mtbs_ca_85 = mtbs_ca[which(mtbs_ca$Fire_Year > 1985),]
-```
 
 tile mtbs data for faster processing
 ```{r tiling}
@@ -117,11 +151,12 @@ zone_list <- zone_list[sapply(zone_list, function(x) length(x) > 0)]
 
 save shapefiles
 ```{r save shps, eval = FALSE}
+#export zone list as R data - Apparently this doesn't work with terra Spat- objects (https://github.com/rspatial/terra/issues/549)
+# save(zone_list, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca_zones.RData"))
+
 #save mtbs zones as shapefiles
-lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], 
-                                      file = datadir( paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/", 
-                                                             names(zone_list[i]), ".shp")),
-                                      overwrite = TRUE))
+lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/", names(zone_list[i]), ".shp")),overwrite = TRUE))
+
 plot(zone_list[[1])
 ```
 

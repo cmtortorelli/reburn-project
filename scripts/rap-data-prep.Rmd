@@ -26,6 +26,8 @@ source(here("scripts/convenience_functions.R"))
 ```
 
 obtain RAP grids for the corresponding extent
+
+This is really slow. RAP is available in GEE so, going extracting data from GEE instead
 ```{r}
 #load mtbs zones for extracting rap grids
 
