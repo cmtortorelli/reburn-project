@@ -1,0 +1,208 @@
+---
+title: "extract-reburn-area"
+author: "CT"
+date: '2022-07-20'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(geos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+
+
+This script extracts reburned area from fire perimeters for analysis
+
+```{r load data}
+#load mtbs data
+mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_west.shp")) 
+
+```
+
+
+## Mapping reburned areas
+
+Map areas that have burned at least 2x
+
+> Q I think that is what this code is doing. was having a lot of issues with providing only one polygon to st_intersection. See next chunk.
+
+```{r}
+#convert spatvector to sf 
+mtbs_sf = mtbs_perims %>% st_as_sf()
+
+
+mtbs_int = mtbs_sf[2] %>% st_buffer(., dist = 0) %>% st_intersection(mtbs_sf[2], mtbs_sf[2])
+reburn = mtbs_int[which(mtbs_int$Fire_Year != mtbs_int$Fire_Year.1),]
+
+
+# st_write(reburn, datadir("/prelim-outputs/reburns/reburn85_21.shp")) #this isn't working?
+
+# plot(mtbs_sf["Fire_Year"])
+# plot(reburn["Fire_Year.1"])
+
+# mtbs_intersect = st_intersects(mtbs_sf)
+```
+
+
+```{r}
+
+```
+
+None of this is working :( 
+
+Works with smaller set of polygons (~100) - but not even with 1/36t the size of CA <200 polygons
+CBR: result (after common-bits addition) is INVALID: Self-intersection at or near point 475670.37177563249 4608529.2648357973 (475670.37177563249134 4608529.2648357972503)
+CPL_nary_intersection(x) : GEOS exception
+```{r}
+
+# 
+# mtbs_int_all = mtbs_sf %>% st_buffer(dist = 0) %>% st_intersection()
+# 
+# mtbs_reburn = st_sf(mtbs_int)
+# mtbs_int[which(mtbs_int$n.overlaps > 1),]
+# 
+# plot(mtbs_reburn)
+# 
+# crs(mtbs_sf)
+# 
+# mtbs_int = mtbs_sf_test[1] %>% st_buffer(dist = 0) %>% st_intersection() #works with small dataset but not with even 1/36th of california fire perims #Error in CPL_nary_intersection(x) : GEOS exception
+
+
+# plot(mtbs_int["n.overlaps"]) 
+# 
+#   
+# plot(mtbs_int[2])  
+#   
+#  %>% st_intersection(x = mtbs_sf) #test intersection
+# 
+# test = z1 %>% st_sf() %>% st_buffer(0) %>% st_intersection()
+# 
+# reburn = zone_list_sf[[1]][1:2] %>%
+#   st_intersection(st_buffer(., 0)) %>% 
+
+
+#get areas with two different Fire_IDs (I think these are reburned areas?)
+reburn$reburned = reburn$Fire_ID == reburn$Fire_ID.1
+
+```
+
+
+Rasterize mtbs for easy extraction
+```{r}
+# Rasterize mtbs for easy extraction.  - need to use project coordinate system - like Albers equal area conical 
+# Equal Area Conus Albers. - epsg:5070
+
+
+r = rast(zone_list[[1]], resolution = 30, crs = "epsg:26910")
+
+```
+
+Extract data on the most recent and second most recent fires
+```{r extract most recent fires}
+
+tic()
+mostrecent_fire = raster::rasterize(zone_list[[1]] %>% as("Spatial"), r %>% raster(), field="Fire_Year", fun=max)
+toc()
+
+#function to extract second most recent fire 
+second_recent_func = function(x, na.rm) {
+  x = x[!is.na(x)]
+  if(length(x) == 0) { return(NA) }
+  x_nomax = x[x != max(x)]
+  if (length(x_nomax) == 0) { return(NA) }
+  second_recent =  max(x_nomax)
+  return(second_recent)
+}
+
+tic()
+secondrecent_fire = raster::rasterize(zone_list[[1]] %>% as("Spatial"), r %>% raster, field="Fire_Year", fun=second_recent_func)
+toc()
+#~2.3 mins at 30m res
+
+```
+
+---------------------------------------------------------------------------------
+# Subset by FS land
+
+remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
+```{r FS land, eval = FALSE}
+#load ca fs land spatial data
+fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
+# plot(fs)
+fs = project(fs, newcrs) #project to UTMs
+
+fs_sf = sf::st_as_sf(fs)
+mtbs_ca_sf = sf::st_as_sf(mtbs_ca)
+
+
+# intersect - note that sf is intelligent with attribute data!
+fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf)
+# plot(mtbs_ca_sf$geometry, axes = TRUE)
+# plot(fs_mtbs_int$geometry, add = TRUE, col = 'red')
+
+# add in areas in m2
+fs_area <- fs_mtbs_int %>% 
+  mutate(area = st_area(.) %>% as.numeric())
+
+# for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
+fs_area = fs_area %>% 
+  as_tibble() %>% 
+  group_by(Event_ID, OWNERCLASSIFICATION) %>% 
+  summarize(area = sum(area)) %>%
+  filter(area >= 500000)
+
+#select fire perims that >= 50ha identified in fs_area
+fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+
+#some summary stats/data vis
+# fs_mtbs_ca %>% data.frame() %>% 
+#   group_by(YEAR) %>% 
+#   summarise(acres_yr = sum(BurnBndAc)) %>% 
+#   plot(acres_yr ~ YEAR)
+```
+
+------------------------------------------------------------------------------------
+# point method 
+
+Create grid of points for extracting data to 
+*this is really slow at 30m resolution!!
+```{r point grid, eval = FALSE}
+## create a grid of points
+tic()
+grdpts = sf::st_make_grid(mtbs_ca1, cellsize = 30, what = "centers")
+toc()
+
+## convert it to an `sf` object, as opposed to an `sfc`
+grdpts = sf::st_sf(grdpts)
+grdpts = vect(grdpts)
+
+# plot(grdpts)
+# plot(mtbs_ca1, add = TRUE)
+
+#add identifier
+grdpts$ID = 1:length(grdpts)
+```
+
+extract mtbs data to points
+```{r}
+mtbs_pnts = intersect(mtbs_ca1, grdpts)
+
+```
