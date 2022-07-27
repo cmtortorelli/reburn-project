@@ -1,0 +1,149 @@
+---
+title: "extract-reburn-area"
+author: "CT"
+date: '2022-07-20'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(geos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+
+
+This script overlays reburned areas with other data layers for decision making
+
+```{r load data}
+#load mtbs data
+reburn = vect(datadir("/prelim-outputs/reburns/reburn85_21.shp")) 
+newcrs =  "EPSG:5070"  
+reburn = project(reburn, newcrs) #reproject to match Landfire
+
+test_perim = reburn[1,]
+```
+
+## Overlay with Landfire BPS to get BPS codes for reburned area
+
+load data
+```{r, eval = FALSE}
+# #load ca fs land spatial data
+# bps = rast(datadir("/raw-data/Landfire/LF2017_BPS_200_WEST/LC16_BPS_200_West.tif")) 
+# 
+# #mask out non-reburn areas
+# bps_reburn = mask(bps, reburn)
+# writeRaster(bps_reburn, datadir("/prelim-outputs/bps_reburn_mask.tif")) #save a read back in because masking took so long
+reburn_sf = sf::st_as_sf(reburn)
+
+
+bps_reburn_mask = rast(datadir("/prelim-outputs/bps_reburn_mask.tif")) 
+bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/LF16_BPS_200.csv"))
+
+bps_test = mask(bps_reburn_mask, test_perim)
+
+plot(bps_test)
+```
+
+```{r}
+#convert to polygon for plotting, remove non-vegetated areas (x>31)
+bps_vect = rasterToPolygons(bps_reburn_mask, fun=function(x){x>31}, n=4, na.rm=TRUE, dissolve=TRUE)
+
+
+```
+
+```{r}
+#create new layer with only forested areas. *Note these are areas have the potential to be forested so not necessarily representative of forest at the time of fire
+#*For now, only including BS with forest in the name, excluding woodlands
+forest_codes = bps_codes %>% filter(grepl('Forest', BPS_NAME))
+
+
+forest = bps[which(bps$LC16_BPS_200_West %in% forest_codes$VALUE),]
+forest = bps[which(bps$LC16_BPS_200_West == 416),]
+
+
+#convert reburn to sf for intersection
+reburn_sf = sf::st_as_sf(reburn)
+
+
+
+# intersect - note that sf is intelligent with attribute data!
+forest_rebrun_int <- st_intersection(reburn_sf, bps)
+
+# plot(fs_mtbs_int$geometry)
+
+# add in areas in m2
+# fs_area <- fs_mtbs_int %>% 
+#   mutate(area = st_area(.) %>% as.numeric())
+# 
+# # for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
+# fs_area = fs_area %>% 
+#   as_tibble() %>% 
+#   group_by(Event_ID, OWNERCLASSIFICATION) %>% 
+#   summarize(area = sum(area)) %>%
+#   filter(area >= 500000)
+# 
+# #select fire perims that >= 50ha identified in fs_area
+# fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+```
+
+## Overlay FS land
+
+```{r FS land, eval = FALSE}
+#load ca fs land spatial data
+fs = vect(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") 
+# plot(fs)
+
+fs = project(fs, reburn) 
+
+#convert to sf for interesction
+fs_sf = sf::st_as_sf(fs)
+
+
+# intersect ownership layer with reburns
+fs_reburn_int <- st_intersection(reburn_sf, fs_sf)
+# plot(reburn_sf$geometry, axes = TRUE)
+# plot(fs_reburn_int$geometry) #check if it worked
+
+# sum all forest service land (and remove non FS land)
+fs_reburn_area <- fs_reburn_int %>% 
+  mutate(area = st_area(.) %>% as.numeric()) %>%
+  subset(OWNERCLASSIFICATION == "USDA FOREST SERVICE") %>%
+  dplyr::select(c("Fire_Yr", "Fr_Yr_1", "area", "OWNERCLASSIFICATION"))
+
+reburn_sf <- reburn_sf %>% 
+  mutate(area = st_area(.) %>% as.numeric()) #add area in m^2
+
+# calcualte percentage of reburn area on FS land ~32 % (7,003,752 hectares)
+100 - ((sum(reburn_sf$area) - sum(fs_reburn_area$area))/sum(reburn_sf$area) * 100)
+
+
+# some summary stats/data vis
+fs_reburn_area %>% data.frame() %>%
+  group_by(Fire_Yr) %>%
+  summarise(acres_yr = sum(area)) %>%
+  plot(acres_yr ~ Fire_Yr) 
+
+```
+Only ~32% of reburns occured on FS land, but I imagine this captures the majority of reburns occuring in forests
+
+
+
+
+

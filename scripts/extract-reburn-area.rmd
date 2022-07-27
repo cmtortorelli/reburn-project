@@ -38,11 +38,12 @@ mtbs_perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zo
 ```
 
 
+
 ## Mapping reburned areas
 
 Map areas that have burned at least 2x
 
-> Q I think that is what this code is doing. was having a lot of issues with providing only one polygon to st_intersection. See next chunk.
+> Q I think that is what this code is doing. I was having a lot of issues with providing only one polygon to st_intersection. See next chunk.
 
 ```{r}
 #convert spatvector to sf 
@@ -50,10 +51,10 @@ mtbs_sf = mtbs_perims %>% st_as_sf()
 
 
 mtbs_int = mtbs_sf[2] %>% st_buffer(., dist = 0) %>% st_intersection(mtbs_sf[2], mtbs_sf[2])
-reburn = mtbs_int[which(mtbs_int$Fire_Year != mtbs_int$Fire_Year.1),]
+reburn2 = mtbs_int[which(mtbs_int$Fire_Year != mtbs_int$Fire_Year.1),]
 
-
-# st_write(reburn, datadir("/prelim-outputs/reburns/reburn85_21.shp")) #this isn't working?
+reburn_polys = st_collection_extract(reburn2, "POLYGON")
+# st_write(reburn_polys, datadir("/prelim-outputs/reburns/reburn85_21.shp")) 
 
 # plot(mtbs_sf["Fire_Year"])
 # plot(reburn["Fire_Year.1"])
@@ -61,12 +62,21 @@ reburn = mtbs_int[which(mtbs_int$Fire_Year != mtbs_int$Fire_Year.1),]
 # mtbs_intersect = st_intersects(mtbs_sf)
 ```
 
-
+union polygons within reburn for extracting information from predictor varibales
 ```{r}
+#combine polygons within reburn
+reburn_union = reburn_polys %>% group_by(Fire_Year.1) %>%
+    summarise(geometry = sf::st_union(geometry)) %>%
+    ungroup()
 
+plot(reburn_union)
 ```
 
-None of this is working :( 
+--------------------------------------------------------------------------------------------
+
+
+
+intersection with one vector to get n.overlaps (below) is not working :( 
 
 Works with smaller set of polygons (~100) - but not even with 1/36t the size of CA <200 polygons
 CBR: result (after common-bits addition) is INVALID: Self-intersection at or near point 475670.37177563249 4608529.2648357973 (475670.37177563249134 4608529.2648357972503)
@@ -100,10 +110,29 @@ CPL_nary_intersection(x) : GEOS exception
 
 
 #get areas with two different Fire_IDs (I think these are reburned areas?)
-reburn$reburned = reburn$Fire_ID == reburn$Fire_ID.1
+# reburn$reburned = reburn$Fire_ID == reburn$Fire_ID.1
 
 ```
 
+intersect with terra and SpatVectors - I don't think this is doing what we want..
+
+```{r}
+# #intersect fire perims
+# mtbs_intersect = intersect(mtbs_perims, mtbs_perims)
+# #select relevant columns
+# mtbs_intersect = mtbs_intersect[,c(1:2,14:15)]
+# #rename columns
+# names(mtbs_intersect) = c("Fire_ID", "Fire_Year", "Fire_ID2", "Fire_Year2")
+# #extract only areas that reburned
+# reburn = mtbs_intersect[which(mtbs_intersect$Fire_ID != mtbs_intersect$Fire_Year2),]
+
+# plot(reburn[1:500])
+
+```
+
+
+-------------------------------------------------
+Raster approach
 
 Rasterize mtbs for easy extraction
 ```{r}
@@ -140,44 +169,6 @@ toc()
 ```
 
 ---------------------------------------------------------------------------------
-# Subset by FS land
-
-remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
-```{r FS land, eval = FALSE}
-#load ca fs land spatial data
-fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
-# plot(fs)
-fs = project(fs, newcrs) #project to UTMs
-
-fs_sf = sf::st_as_sf(fs)
-mtbs_ca_sf = sf::st_as_sf(mtbs_ca)
-
-
-# intersect - note that sf is intelligent with attribute data!
-fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf)
-# plot(mtbs_ca_sf$geometry, axes = TRUE)
-# plot(fs_mtbs_int$geometry, add = TRUE, col = 'red')
-
-# add in areas in m2
-fs_area <- fs_mtbs_int %>% 
-  mutate(area = st_area(.) %>% as.numeric())
-
-# for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
-fs_area = fs_area %>% 
-  as_tibble() %>% 
-  group_by(Event_ID, OWNERCLASSIFICATION) %>% 
-  summarize(area = sum(area)) %>%
-  filter(area >= 500000)
-
-#select fire perims that >= 50ha identified in fs_area
-fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
-
-#some summary stats/data vis
-# fs_mtbs_ca %>% data.frame() %>% 
-#   group_by(YEAR) %>% 
-#   summarise(acres_yr = sum(BurnBndAc)) %>% 
-#   plot(acres_yr ~ YEAR)
-```
 
 ------------------------------------------------------------------------------------
 # point method 

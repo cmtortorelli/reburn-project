@@ -40,7 +40,7 @@ mtbs_perims$YEAR = as.numeric(substr(as.character(mtbs_perims$Ig_Date), 1,4))
 ```
 
 
-Prep perims for GEE cbi extraction and subset by year
+Prep perims for GEE burn severity extraction and subset by year
 ```{r gee prep}
 #grid out CA and subset
 #DY: This tiling approach looks great. We should keep an eye out for possible cases where edge effects might be an issue, and if they exist, add a buffer to the grid.
@@ -59,7 +59,7 @@ mtbs_perims$End_Day = 273
 
 mtbs_perims = mtbs_perims[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
 
-#remove fires from 1984 because we don't have pre-fire imagery
+#remove fires from before 1986 because we don't have pre-fire imagery
 mtbs_perims = mtbs_perims[which(mtbs_perims$Fire_Year > 1985),]
 ```
 
@@ -114,11 +114,13 @@ mtbs_states = terra::intersect(mtbs_perims21, states)
 # states = states[, "NAME"] #select name column
 mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 
+#extract burn perims across the western US
+mtbs_west = mtbs_states[mtbs_states$NAME == "California" | mtbs_states$NAME == "Washington" | mtbs_states$NAME == "Oregon" | mtbs_states$NAME == "Idaho" | mtbs_states$NAME == "Colorado" | mtbs_states$NAME == "Montana" | mtbs_states$NAME == "Wyoming" | mtbs_states$NAME == "Utah" | mtbs_states$NAME == "Nevada" | mtbs_states$NAME == "Arizona" | mtbs_states$NAME == "New Mexico",]
 
 #reproject to UTMs Zone 10 for units = m
 newcrs = "epsg:26910"
 mtbs_ca = project(mtbs_ca, newcrs)
-
+mtbs_west = project(mtbs_west, newcrs)
 ```
 
 
@@ -158,7 +160,50 @@ save shapefiles
 lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/", names(zone_list[i]), ".shp")),overwrite = TRUE))
 
 # writeVector(mtbs_ca, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca.shp"), overwrite = TRUE)
+# 
+# writeVector(mtbs_west, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_west.shp"), overwrite = TRUE)
+
 
 # plot(zone_list[[1]])
 ```
 
+
+----------------------------------------------------------------------------------------
+# Subset FS land
+
+remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
+```{r FS land, eval = FALSE}
+#load ca fs land spatial data
+fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
+# plot(fs)
+fs = project(fs, newcrs) #project to UTMs
+
+fs_sf = sf::st_as_sf(fs)
+mtbs_ca_sf = sf::st_as_sf(mtbs_ca)
+
+
+# intersect - note that sf is intelligent with attribute data!
+fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf)
+# plot(mtbs_ca_sf$geometry, axes = TRUE)
+# plot(fs_mtbs_int$geometry, add = TRUE, col = 'red')
+
+# add in areas in m2
+fs_area <- fs_mtbs_int %>% 
+  mutate(area = st_area(.) %>% as.numeric())
+
+# for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
+fs_area = fs_area %>% 
+  as_tibble() %>% 
+  group_by(Event_ID, OWNERCLASSIFICATION) %>% 
+  summarize(area = sum(area)) %>%
+  filter(area >= 500000)
+
+#select fire perims that >= 50ha identified in fs_area
+fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+
+#some summary stats/data vis
+# fs_mtbs_ca %>% data.frame() %>% 
+#   group_by(YEAR) %>% 
+#   summarise(acres_yr = sum(BurnBndAc)) %>% 
+#   plot(acres_yr ~ YEAR)
+```
