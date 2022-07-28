@@ -36,8 +36,6 @@ This script overlays reburned areas with other data layers for decision making
 reburn = vect(datadir("/prelim-outputs/reburns/reburn85_21.shp")) 
 newcrs =  "EPSG:5070"  
 reburn = project(reburn, newcrs) #reproject to match Landfire
-
-test_perim = reburn[1,]
 ```
 
 ## Overlay with Landfire BPS to get BPS codes for reburned area
@@ -50,72 +48,62 @@ load data
 # #mask out non-reburn areas
 # bps_reburn = mask(bps, reburn)
 # writeRaster(bps_reburn, datadir("/prelim-outputs/bps_reburn_mask.tif")) #save a read back in because masking took so long
-reburn_sf = sf::st_as_sf(reburn)
 
+#read in bps vector - converted in Arc Pro to save memory
+# bps_reburn = vect(datadir("/prelim-outputs/BPS/bps_reburn_vect.shp")) 
+```
 
-bps_reburn_mask = rast(datadir("/prelim-outputs/bps_reburn_mask.tif")) 
+Read in BPS codes
+```{r BPS codes}
 bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/LF16_BPS_200.csv"))
 
-bps_test = mask(bps_reburn_mask, test_perim)
-
-plot(bps_test)
-```
-
-```{r}
-#convert to polygon for plotting, remove non-vegetated areas (x>31)
-bps_vect = rasterToPolygons(bps_reburn_mask, fun=function(x){x>31}, n=4, na.rm=TRUE, dissolve=TRUE)
-
-
-```
-
-```{r}
 #create new layer with only forested areas. *Note these are areas have the potential to be forested so not necessarily representative of forest at the time of fire
 #*For now, only including BS with forest in the name, excluding woodlands
 forest_codes = bps_codes %>% filter(grepl('Forest', BPS_NAME))
-
-
-forest = bps[which(bps$LC16_BPS_200_West %in% forest_codes$VALUE),]
-forest = bps[which(bps$LC16_BPS_200_West == 416),]
-
-
-#convert reburn to sf for intersection
-reburn_sf = sf::st_as_sf(reburn)
-
-
-
-# intersect - note that sf is intelligent with attribute data!
-forest_rebrun_int <- st_intersection(reburn_sf, bps)
-
-# plot(fs_mtbs_int$geometry)
-
-# add in areas in m2
-# fs_area <- fs_mtbs_int %>% 
-#   mutate(area = st_area(.) %>% as.numeric())
 # 
-# # for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
-# fs_area = fs_area %>% 
-#   as_tibble() %>% 
-#   group_by(Event_ID, OWNERCLASSIFICATION) %>% 
-#   summarize(area = sum(area)) %>%
-#   filter(area >= 500000)
-# 
-# #select fire perims that >= 50ha identified in fs_area
-# fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+# forest = subset(bps_reburn, bps_reburn$gridcode %in% forest_codes$VALUE)
+# writeVector(forest, datadir("/prelim-outputs/BPS/bps_forest_reburn_mask.shp")) #save a read back in because reading in the entire shp file took so long
 ```
 
-## Overlay FS land
+```{r}
+bps_forest = read_sf(datadir("/prelim-outputs/BPS/bps_forest_reburn_mask.shp")) #read_sf is faster than st_read
+
+bps_forest <- bps_forest %>% 
+  mutate(area = st_area(.) %>% as.numeric())
+
+forest_df = as.data.frame(bps_forest) %>% 
+  rename("VALUE" = gridcode) %>% 
+  merge(., forest_codes[,c(1,2,5)], all.y = FALSE) %>% 
+  dplyr::select(c(VALUE, BPS_NAME, area)) %>%
+  mutate(percArea = as.numeric((area / sum(area)) *100))
+
+plot(forest_df$percArea ~ forest_df$VALUE)
+
+```
+## Check to see how much forested reburned area falls in FS land
 
 ```{r FS land, eval = FALSE}
 #load ca fs land spatial data
-fs = vect(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") 
+ownership = read_sf(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") 
 # plot(fs)
 
-fs = project(fs, reburn) 
+ownership = st_transform(ownership, st_crs(bps_forest))  #set crs equal to bps layer
+fs = ownership %>% subset(OWNERCLASSIFICATION == "USDA FOREST SERVICE")
 
-#convert to sf for interesction
-fs_sf = sf::st_as_sf(fs)
+bps_fs_int = st_intersection(bps_forest, fs)
+
+#recalculate area
+bps_fs_int$area_int <- as.numeric(st_area(bps_fs_int))
+
+# st_write(bps_fs_int, datadir("/prelim-outputs/BPS/bps_fs_int.shp")) # Writing this doesn't work? "Value 121340700 of field Shap_Ar of feature 3 not successfully written"
 
 
+#compare fs area to total forest area in reburns
+(1-(sum(bps_forest$area) - sum(bps_fs_int$area_int))/sum(bps_forest$area))*100 #81.42% of forested reburned area is in NF land
+```
+
+
+```{r}
 # intersect ownership layer with reburns
 fs_reburn_int <- st_intersection(reburn_sf, fs_sf)
 # plot(reburn_sf$geometry, axes = TRUE)
