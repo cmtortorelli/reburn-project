@@ -95,8 +95,7 @@ mtbs_perims21 = rbind(mtbs_perims, perims21)
 ```
 
 
-
-### Subset data for faster processing - CA
+### Subset and tile data for faster processing 
 
 Subset by state
 ```{r subset data  by state}
@@ -107,6 +106,10 @@ states = vect(datadir("/raw-data/geography/cb_2018_us_state_20m/cb_2018_us_state
 
 states = project(states, mtbs_perims21)
 
+west = states[states$NAME == "California" | states$NAME == "Washington" | states$NAME == "Oregon" | states$NAME == "Idaho" | states$NAME == "Colorado" | states$NAME == "Montana" | states$NAME == "Wyoming" | states$NAME == "Utah" | states$NAME == "Nevada" | states$NAME == "Arizona" | states$NAME == "New Mexico",]
+
+plot(west)
+
 #intersect states and mtbs perims - this takes a few seconds
 mtbs_states = terra::intersect(mtbs_perims21, states)
 
@@ -115,6 +118,7 @@ mtbs_states = terra::intersect(mtbs_perims21, states)
 mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
 
 #extract burn perims across the western US
+#create west wide 
 mtbs_west = mtbs_states[mtbs_states$NAME == "California" | mtbs_states$NAME == "Washington" | mtbs_states$NAME == "Oregon" | mtbs_states$NAME == "Idaho" | mtbs_states$NAME == "Colorado" | mtbs_states$NAME == "Montana" | mtbs_states$NAME == "Wyoming" | mtbs_states$NAME == "Utah" | mtbs_states$NAME == "Nevada" | mtbs_states$NAME == "Arizona" | mtbs_states$NAME == "New Mexico",]
 
 #reproject to UTMs Zone 10 for units = m
@@ -123,7 +127,31 @@ mtbs_ca = project(mtbs_ca, newcrs)
 mtbs_west = project(mtbs_west, newcrs)
 ```
 
+Remove fires that didn't burn on FS land
+```{r}
+#load ca fs land spatial data
+ownership = read_sf(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") 
+# plot(fs)
 
+ownership = st_transform(ownership, st_crs(mtbs_west))  #set crs equal to bps layer
+fs = ownership[ownership$OWNERCLASSIFICATION == "USDA FOREST SERVICE",]
+
+#convert mtbs data to sf object for intersection
+mtbs_west_sf = sf::st_as_sf(mtbs_west)
+
+#intersect with mtbs 
+mtbs_fs_int = st_intersection(mtbs_west_sf, fs)
+
+#subset mtbs_west so that only fires that intersect FS land are included in severity analysis
+mtbs_west_fs_sub = mtbs_west[mtbs_west$Fire_ID %in% mtbs_fs_int$Fire_ID]
+
+#save subset mtbs as shapefile
+#save mtbs zones as shapefiles
+writeVector(mtbs_west_fs_sub, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_sub.shp"))
+
+# plot(mtbs_fs_int[1])
+# plot(ownership[1], add = T, color = "red")
+```
 
 tile mtbs data for faster processing
 ```{r tiling}
