@@ -87,11 +87,13 @@ perims21 = perims21[which(perims21$irwin_CalculatedAcres >1000),] #area reported
 
 
 perims21 = perims21[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
+
 ```
 
 bind mtbs and 2021 IRWIN fire perims >1000 acres
 ```{r bind perims}
 mtbs_perims21 = rbind(mtbs_perims, perims21)
+
 ```
 
 
@@ -108,75 +110,96 @@ states = project(states, mtbs_perims21)
 
 west = states[states$NAME == "California" | states$NAME == "Washington" | states$NAME == "Oregon" | states$NAME == "Idaho" | states$NAME == "Colorado" | states$NAME == "Montana" | states$NAME == "Wyoming" | states$NAME == "Utah" | states$NAME == "Nevada" | states$NAME == "Arizona" | states$NAME == "New Mexico",]
 
-plot(west)
+#dissolve state boundaries before intersecting 
+west_ag = aggregate(west)
 
-#intersect states and mtbs perims - this takes a few seconds
-mtbs_states = terra::intersect(mtbs_perims21, states)
+#buffer western states 5k
+west_buf = buffer(west_ag, 5000)
 
-#extract just CA for initial analysis
-# states = states[, "NAME"] #select name column
-mtbs_ca = mtbs_states[mtbs_states$NAME == "California",]
+#crop perims to only include western states
+mtbs_west = crop(mtbs_perims21,west_buf)
 
-#extract burn perims across the western US
-#create west wide 
-mtbs_west = mtbs_states[mtbs_states$NAME == "California" | mtbs_states$NAME == "Washington" | mtbs_states$NAME == "Oregon" | mtbs_states$NAME == "Idaho" | mtbs_states$NAME == "Colorado" | mtbs_states$NAME == "Montana" | mtbs_states$NAME == "Wyoming" | mtbs_states$NAME == "Utah" | mtbs_states$NAME == "Nevada" | mtbs_states$NAME == "Arizona" | mtbs_states$NAME == "New Mexico",]
 
 #reproject to UTMs Zone 10 for units = m
 newcrs = "epsg:26910"
-mtbs_ca = project(mtbs_ca, newcrs)
 mtbs_west = project(mtbs_west, newcrs)
 ```
 
 Remove fires that didn't burn on FS land
 ```{r}
-#load ca fs land spatial data
-ownership = read_sf(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") 
-# plot(fs)
+#load fs land spatial data
+ownership_fs = read_sf(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") %>% rename("UNIT_NAME" = "FORESTNAME",
+                                       "OBJECTID" = "BASICOWNERSHIPID") %>%
+                subset(OWNERCLASSIFICATION == "USDA FOREST SERVICE") %>%
+                dplyr::select(OBJECTID, UNIT_NAME, SHAPE_Area, SHAPE)
 
-ownership = st_transform(ownership, st_crs(mtbs_west))  #set crs equal to bps layer
-fs = ownership[ownership$OWNERCLASSIFICATION == "USDA FOREST SERVICE",]
+#read in nps data
+ownership_nps = read_sf(datadir("/raw-data/ownership/nps_boundary/nps_boundary.shp"))
+
+ownership_nps = ownership_nps %>%
+                subset(UNIT_TYPE == "National Park") %>%
+                mutate(SHAPE = geometry,
+                       SHAPE_Area = Shape_Area) %>%
+                dplyr::select(OBJECTID, UNIT_NAME, SHAPE_Area) %>%
+                rename("SHAPE" = "geometry")
+
+
+#combine nps and fs data
+ownership = rbind(ownership_fs, ownership_nps)
+
+#set crs equal to mtbs layer
+ownership = st_transform(ownership, st_crs(mtbs_west))  
 
 #convert mtbs data to sf object for intersection
-mtbs_west_sf = sf::st_as_sf(mtbs_west)
+mtbs_west_sf = sf::st_as_sf(mtbs_west) 
 
 #intersect with mtbs 
-mtbs_fs_int = st_intersection(mtbs_west_sf, fs)
+mtbs_fs_int = st_intersection(mtbs_west_sf, ownership) #not sure why, but this only runs when crs = "epsg:26910" - UTMs
 
-#subset mtbs_west so that only fires that intersect FS land are included in severity analysis
+
+#subset mtbs_west so that only fires that intersect FS land and NPS are included in severity analysis
 mtbs_west_fs_sub = mtbs_west[mtbs_west$Fire_ID %in% mtbs_fs_int$Fire_ID]
+
+#set crs back to NAD83 for GEE
+NAD83 = "epsg:4269"
+mtbs_west_fs_sub = project(mtbs_west_fs_sub, NAD83)
 
 #save subset mtbs as shapefile
 #save mtbs zones as shapefiles
-writeVector(mtbs_west_fs_sub, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_sub.shp"))
+writeVector(mtbs_west_fs_sub, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
 
 # plot(mtbs_fs_int[1])
 # plot(ownership[1], add = T, color = "red")
 ```
 
-tile mtbs data for faster processing
+
+tile perims data for faster processing
 ```{r tiling}
 #larger grid for GEE
-z <- rast(mtbs_ca)
+z <- rast(mtbs_west_fs_sub)
 
-dim(z) <- c(5,5)
-values(z) <- 1:25
+dim(z) <- c(3,3)
+values(z) <- 1:9
 names(z) <- 'Zone'
 z <- as.polygons(z) # coerce SpatRaster to SpatVector polygons
 bz <- buffer(z, width=300) # add 300m buffer around zones
 
 #create a list of zone names
-zones <- paste("mtbs_ca_z",1:25, sep = "")
-zone_list <- vector(mode="list", length = 25)
+zones <- paste("mtbs_fs_z",1:9, sep = "")
+zone_list <- vector(mode="list", length = 9)
 names(zone_list) = zones
 
 #create mtbs variable for each zone with 300m buffer
 for (i in 1:length(bz)){
-  zone_list[[i]] <- terra::intersect(mtbs_ca, bz[i,])
+  zone_list[[i]] <- terra::intersect(mtbs_west_fs_sub, bz[i,])
 }
 
 #remove mtbs zones with no fires leaving 17 zones to run
 zone_list <- zone_list[sapply(zone_list, function(x) length(x) > 0)]
 
+#save zones
+
+writeVector(z, file = datadir("/prelim-outputs/analysis_zones9/analysis_zones9.gpkg"))
 ```
 
 save shapefiles
@@ -184,54 +207,54 @@ save shapefiles
 #export zone list as R data - Apparently this doesn't work with terra Spat- objects (https://github.com/rspatial/terra/issues/549)
 # save(zone_list, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca_zones.RData"))
 
-#save mtbs zones as shapefiles
-lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/", names(zone_list[i]), ".shp")),overwrite = TRUE))
+#save perims by zones as shapefiles
+lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_fs_zones/", names(zone_list[i]), ".shp")),overwrite = TRUE))
 
 # writeVector(mtbs_ca, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca.shp"), overwrite = TRUE)
 # 
 # writeVector(mtbs_west, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_west.shp"), overwrite = TRUE)
 
 
-# plot(zone_list[[1]])
+plot(zone_list[[1]])
 ```
 
 
-----------------------------------------------------------------------------------------
-# Subset FS land
+<!-- ---------------------------------------------------------------------------------------- -->
+<!-- # Subset FS land -->
 
-remove fires that did not burn on FS land (keep perims with >=50 ha overlap)
-```{r FS land, eval = FALSE}
-#load ca fs land spatial data
-fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg")) 
-# plot(fs)
-fs = project(fs, newcrs) #project to UTMs
+<!-- remove fires that did not burn on FS land (keep perims with >=50 ha overlap) -->
+<!-- ```{r FS land, eval = FALSE} -->
+<!-- #load ca fs land spatial data -->
+<!-- fs = vect(datadir("/raw-data/ownership/fsland_ca.gpkg"))  -->
+<!-- # plot(fs) -->
+<!-- fs = project(fs, newcrs) #project to UTMs -->
 
-fs_sf = sf::st_as_sf(fs)
-mtbs_ca_sf = sf::st_as_sf(mtbs_ca)
+<!-- fs_sf = sf::st_as_sf(fs) -->
+<!-- mtbs_ca_sf = sf::st_as_sf(mtbs_ca) -->
 
 
-# intersect - note that sf is intelligent with attribute data!
-fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf)
-# plot(mtbs_ca_sf$geometry, axes = TRUE)
-# plot(fs_mtbs_int$geometry, add = TRUE, col = 'red')
+<!-- # intersect - note that sf is intelligent with attribute data! -->
+<!-- fs_mtbs_int <- st_intersection(mtbs_ca_sf, fs_sf) -->
+<!-- # plot(mtbs_ca_sf$geometry, axes = TRUE) -->
+<!-- # plot(fs_mtbs_int$geometry, add = TRUE, col = 'red') -->
 
-# add in areas in m2
-fs_area <- fs_mtbs_int %>% 
-  mutate(area = st_area(.) %>% as.numeric())
+<!-- # add in areas in m2 -->
+<!-- fs_area <- fs_mtbs_int %>%  -->
+<!--   mutate(area = st_area(.) %>% as.numeric()) -->
 
-# for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap
-fs_area = fs_area %>% 
-  as_tibble() %>% 
-  group_by(Event_ID, OWNERCLASSIFICATION) %>% 
-  summarize(area = sum(area)) %>%
-  filter(area >= 500000)
+<!-- # for each perim, get area overlap with forest service land, then remove areas with <50 ha overlap -->
+<!-- fs_area = fs_area %>%  -->
+<!--   as_tibble() %>%  -->
+<!--   group_by(Event_ID, OWNERCLASSIFICATION) %>%  -->
+<!--   summarize(area = sum(area)) %>% -->
+<!--   filter(area >= 500000) -->
 
-#select fire perims that >= 50ha identified in fs_area
-fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,]
+<!-- #select fire perims that >= 50ha identified in fs_area -->
+<!-- fs_mtbs_ca = mtbs_ca[mtbs_ca$Event_ID %in% fs_area$Event_ID,] -->
 
-#some summary stats/data vis
-# fs_mtbs_ca %>% data.frame() %>% 
-#   group_by(YEAR) %>% 
-#   summarise(acres_yr = sum(BurnBndAc)) %>% 
-#   plot(acres_yr ~ YEAR)
-```
+<!-- #some summary stats/data vis -->
+<!-- # fs_mtbs_ca %>% data.frame() %>%  -->
+<!-- #   group_by(YEAR) %>%  -->
+<!-- #   summarise(acres_yr = sum(BurnBndAc)) %>%  -->
+<!-- #   plot(acres_yr ~ YEAR) -->
+<!-- ``` -->
