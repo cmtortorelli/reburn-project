@@ -60,7 +60,7 @@ mtbs_perims$End_Day = 273
 mtbs_perims = mtbs_perims[,c("Fire_ID", "Fire_Year", "Start_Day", "End_Day")]
 
 #remove fires from before 1986 because we don't have pre-fire imagery
-mtbs_perims = mtbs_perims[which(mtbs_perims$Fire_Year > 1985),]
+mtbs_perims = mtbs_perims[which(mtbs_perims$Fire_Year >= 1985),]
 ```
 
 
@@ -99,7 +99,7 @@ mtbs_perims21 = rbind(mtbs_perims, perims21)
 
 ### Subset and tile data for faster processing 
 
-Subset by state
+Subset to just the western US
 ```{r subset data  by state}
 
 #extract states of interest
@@ -124,6 +124,8 @@ mtbs_west = crop(mtbs_perims21,west_buf)
 newcrs = "epsg:26910"
 mtbs_west = project(mtbs_west, newcrs)
 ```
+
+
 
 Remove fires that didn't burn on FS land
 ```{r}
@@ -163,20 +165,49 @@ mtbs_west_fs_sub = mtbs_west[mtbs_west$Fire_ID %in% mtbs_fs_int$Fire_ID]
 #set crs back to NAD83 for GEE
 NAD83 = "epsg:4269"
 mtbs_west_fs_sub = project(mtbs_west_fs_sub, NAD83)
+```
 
+
+```{r}
 #save subset mtbs as shapefile
 #save mtbs zones as shapefiles
-writeVector(mtbs_west_fs_sub, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+writeVector(mtbs_west_fs_sub, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"), overwrite = TRUE)
 
 # plot(mtbs_fs_int[1])
 # plot(ownership[1], add = T, color = "red")
+```
+
+Keep only perimeters that were included in reburns
+```{r}
+mtbs_west_fs_sub = read_sf(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+
+#find overlapping polygons/perimeters (reburns)
+mtbs_fs_reburn_sf = st_intersects(mtbs_west_fs_sub) 
+
+#remove perimeters that didn't overlap others
+mtbs_fs_reburn_df = data.frame(mtbs_fs_reburn_sf) %>% 
+  mutate(sum = row.id - col.id) %>%
+  subset(sum != 0)
+
+#add perimeter ID to mtbs_west_sub to index from the reburn dataframe
+mtbs_west_fs_sub_reburn = mtbs_west_fs_sub %>%
+  mutate(index = 1:nrow(mtbs_west_fs_sub)) %>%
+  subset(index %in% mtbs_fs_reburn_df$row.id)
+
+#checking to make sure indices are correct
+plot(mtbs_west_fs_sub[c( 2749,884,1,1157),2]) #looks good
+
+
+# st_write(mtbs_west_fs_sub_reburn, datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_sub_reburn.shp"), append = TRUE)
 ```
 
 
 tile perims data for faster processing
 ```{r tiling}
 #larger grid for GEE
-z <- rast(mtbs_west_fs_sub)
+mtbs_west_fs_sub_reburn = vect(mtbs_west_fs_sub_reburn)
+
+z <- rast(mtbs_west_fs_sub_reburn)
 
 dim(z) <- c(3,3)
 values(z) <- 1:9
@@ -191,15 +222,14 @@ names(zone_list) = zones
 
 #create mtbs variable for each zone with 300m buffer
 for (i in 1:length(bz)){
-  zone_list[[i]] <- terra::intersect(mtbs_west_fs_sub, bz[i,])
+  zone_list[[i]] <- terra::intersect(mtbs_west_fs_sub_reburn, bz[i,])
 }
 
 #remove mtbs zones with no fires leaving 17 zones to run
 zone_list <- zone_list[sapply(zone_list, function(x) length(x) > 0)]
 
 #save zones
-
-writeVector(z, file = datadir("/prelim-outputs/analysis_zones9/analysis_zones9.gpkg"))
+writeVector(z, file = datadir("/prelim-outputs/analysis_zones9/analysis_zones9.gpkg"), overwrite = TRUE)
 ```
 
 save shapefiles
@@ -208,14 +238,11 @@ save shapefiles
 # save(zone_list, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca_zones.RData"))
 
 #save perims by zones as shapefiles
-lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_fs_zones/", names(zone_list[i]), ".shp")),overwrite = TRUE))
-
-# writeVector(mtbs_ca, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_ca.shp"), overwrite = TRUE)
-# 
-# writeVector(mtbs_west, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_ca_zones/mtbs_west.shp"), overwrite = TRUE)
+lapply(1:length(zone_list), function(i) writeVector(zone_list[[i]], file = datadir(paste0("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_fs_zones/", names(zone_list[i]), ".shp"))))
 
 
-plot(zone_list[[1]])
+# plot(zone_list[[1]])
+# zone_list[[1]]
 ```
 
 
