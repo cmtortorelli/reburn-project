@@ -1,0 +1,133 @@
+---
+title: "Burn Severity - forest type analysis"
+author: "CT"
+date: "2022-07-28"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(geos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+
+This script compares re-burn severity by forest type
+
+```{r load data}
+#load mtbs data
+reburn = read_sf(datadir("/prelim-outputs/reburns/reburn85_21.shp")) 
+# Equal Area Conus Albers. - epsg:5070 for western US
+newcrs = st_crs("epsg:5070")
+reburn = st_transform(reburn, newcrs)
+```
+
+Create column with the most recent fire year from the reburn polygons
+
+```{r}
+reburn_2001 = reburn %>%
+  mutate(mostrecent_Fire = pmax(Fire_Yr, Fr_Yr_1, na.rm = TRUE)) %>%
+  subset(mostrecent_Fire > 2000)
+```
+
+Bring in burn mosaic rasters from mtbs - might have to tile this for faster processing - ran in Arc instead because of memory problems in R
+```{r burn mosaics}
+#first import all files in a single folder as a list - reverse order so that most recent files are first
+rastlist = rev(list.files(path = datadir("raw-data/MTBS_BSmosaics"), pattern='.tif', all.files=TRUE, full.names=TRUE))
+
+raster_list = lapply(rastlist, rast)
+rsrc = sprc(raster_list)
+# all_mtbs_bs = merge(rsrc) #performed merge in ArcGIS Pro because it was too memory intesive for R
+```
+
+
+```{r}
+#explore distribution of bps forest types by reburn area
+bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/LF16_BPS_200.csv"))
+#read in CT BPS codes - condesned from LANDFIRE BPS
+bps_codesCT = read.csv(datadir("/prelim-outputs/BPS/codes_BPSforset_reburn_intersect_CT.csv"))
+
+#add CT codes to bps_codes
+bps_codes_forest = merge(bps_codesCT[,1:2], bps_codes, all.y = FALSE)
+
+bps_reburn <- bps_reburn %>% 
+  mutate(area = st_area(.) %>% as.numeric(), scientific = FALSE)
+
+forest_df = as.data.frame(bps_reburn) %>%
+  rename("VALUE" = gridcode) %>% 
+  merge(., bps_codes[,c(1,2,5)], all.y = FALSE) %>% 
+  dplyr::select(c(VALUE, BPS_NAME, area)) %>%
+  mutate(percArea = as.numeric((area / sum(area)) *100)) %>%
+  group_by(BPS_NAME) %>%
+  summarise(total_percArea = sum(percArea),
+            total_area = sum(area))
+
+# write.csv(forest_df, datadir("/prelim-outputs/BPS/codes_BPSforset_reburn_intersect.csv"), row.names = FALSE)
+```
+
+
+```{r}
+#Read in merged MTBS severity raster (fire severity from 2001-2020 with most recent fire displaying severity)
+library(exactextractr)
+bs = rast(datadir("/prelim-outputs/MTBS_BSmosaics/MTBS_BSmosaic.tif")) 
+
+#set all areas that did not burn at low or high severity to NA
+bs_clamp = terra::clamp(bs, lower=2, upper = 5, values=FALSE)
+
+#read in bps_forest_reburn vector (forest BPS codes intersected with reburned area)
+bps_reburn = read_sf(datadir("/prelim-outputs/BPS/bps_forest_reburn_mask.shp"))
+
+#zonal histogram for burn severity by bps_group
+tic()
+bps_bs_zonalhist = exactextractr::exact_extract(bs_clamp, bps_reburn,
+                                    append_cols=T,
+                                    summarize_df=T,
+                                    fun=function(x) x %>%
+                                      group_by(MTBS_BSmosaic = as.character(value)) %>%
+                                      summarise(area = sum(coverage_fraction)*30*30 %>%
+                                                  units::set_units('m^2'))
+                                    )
+toc() #~11 mins
+write.csv(bps_bs_zonalhist, datadir("/prelim-outputs/BPS/bps_bs_zonalhist.csv"))
+```
+
+Zonal histogram - looking at veg type
+```{r}
+bps_bs_zonalhist = bps_bs_zonalhist %>% 
+  rename(VALUE = gridcode)
+#add vegtype to zonal hist
+bps_bs_zonalhist = bps_bs_zonalhist %>% 
+  merge(., bps_codes_forest[,1:3], all.y = FALSE)
+
+bps_bs_zonalhist_summary = bps_bs_zonalhist %>% 
+  group_by(CT_BPS_NAME, MTBS_BSmosaic) %>%
+  summarise(totalArea = sum(area))
+
+
+bps_bs_zonalhist_summary_wide = bps_bs_zonalhist_summary %>% 
+  pivot_wider(names_from = MTBS_BSmosaic, values_from = totalArea)
+
+
+bps_bs_zonalhist_summary_wide$BPSarea = rowSums(bps_bs_zonalhist_summary_wide[,2:6],na.rm=TRUE)
+bps_bs_zonalhist_summary_wide$propHighSev = round(bps_bs_zonalhist_summary_wide$`5`/bps_bs_zonalhist_summary_wide$BPSarea, 2) 
+bps_bs_zonalhist_summary_wide$propHighSev4_5 = round((bps_bs_zonalhist_summary_wide$`5`+bps_bs_zonalhist_summary_wide$`4`)/bps_bs_zonalhist_summary_wide$BPSarea, 2) 
+
+
+bps_bs_zonalhist_summary_wide$percTotalArea = round(bps_bs_zonalhist_summary_wide$BPSarea / sum(bps_bs_zonalhist_summary_wide$BPSarea)*100,2)
+```

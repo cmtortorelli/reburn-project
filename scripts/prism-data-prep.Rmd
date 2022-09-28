@@ -1,5 +1,5 @@
 ---
-title: "reburn-data-prep"
+title: "prism-data-prep"
 author: "CT"
 date: '2022-07-12'
 output: html_document
@@ -26,8 +26,8 @@ source(here("scripts/convenience_functions.R"))
 
 
 ```{r}
-# set the download folder using `prism_set_dl_dir()`.
-prism_set_dl_dir(datadir("raw-data/prismtmp"))
+# # set the download folder using `prism_set_dl_dir()`.
+# prism_set_dl_dir(datadir("raw-data/prism"))
 ```
 
 download prism data - this didn't work, downloading manually from the prism site
@@ -45,11 +45,30 @@ download prism data - this didn't work, downloading manually from the prism site
 # get_prism_normals(type="vpdmin", resolution = "800m", mon = 1:12, keepZip = FALSE)
 ```
 
-subset
+read in prism data
 ```{r}
-#function to search for specific parameters, time steps, days, months, years, or ranges of days, months, years.
+#30-yr norms averaged across the entire year 800m res
+precip_norm = rast(datadir("raw-data/prism/PRISM_ppt_30yr_normal_800mM3_annual_bil/PRISM_ppt_30yr_normal_800mM3_annual_bil.bil"))
+temp_norm = rast(datadir("raw-data/prism/PRISM_tmean_30yr_normal_800mM3_annual_bil/PRISM_tmean_30yr_normal_800mM3_annual_bil.bil"))
 
-# prism_archive_subset("tmean", "daily", mon = 6)
+#montly norms - 800m res
+filelist_temp = list.files(datadir("raw-data/prism/PRISM_tmean_30yr_normal_800mM3_all_bil"), pattern='.bil$', full.names = TRUE)
+filelist_precip = list.files(datadir("raw-data/prism/PRISM_ppt_30yr_normal_800mM3_all_bil"), pattern='.bil$', full.names = TRUE)
+
+#convert to raster stack
+temp_month = rast(filelist_temp) %>% stack()
+precip_month = rast(filelist_precip) %>% stack()
+
+```
+
+Calcualte average summer temp
+```{r}
+#calculate summer average temp
+summer_temp = raster::subset(temp_month, grep(pattern = '_06_|_07_|_08_', names(temp_month), value = T))
+summer_temp_mean = calc(summer_temp, mean)
+
+#write raster
+writeRaster(summer_temp_mean, datadir("raw-data/prism/PRISM_mean_summer_temp_norms_800m.bil"))
 ```
 
 
@@ -66,27 +85,27 @@ calculate temperature anomalies
 
 The average monthly temperature for the 12 months proceeding the July of the fire, minus 1981–2020 normals <- from Cansler et al 2022
 ```{r}
-jnorm <- prism_archive_subset(
-  "tmean", "monthly normals", mon = 1, resolution = "4km"
-)
-j2013 <- prism_archive_subset("tmean", "monthly", years = 2013, mon = 1)
-
-# raster needs a full path, not the "short" prism data name
-jnorm <- pd_to_file(jnorm)
-j2013 <- pd_to_file(j2013)
-
-## Now we'll load the rasters.
-jnorm_rast <- raster(jnorm)
-j2013_rast <- raster(j2013)
-
-# Now we can do simple subtraction to get the anomaly by subtracting 2014 
-# from the 30 year normal map
-anomCalc <- function(x, y) {
-  return(x - y)
-}
-
-anom_rast <- raster::overlay(j2013_rast,jnorm_rast,fun = anomCalc)
-
-plot(anom_rast)
+# jnorm <- prism_archive_subset(
+#   "tmean", "monthly normals", mon = 1, resolution = "4km"
+# )
+# j2013 <- prism_archive_subset("tmean", "monthly", years = 2013, mon = 1)
+# 
+# # raster needs a full path, not the "short" prism data name
+# jnorm <- pd_to_file(jnorm)
+# j2013 <- pd_to_file(j2013)
+# 
+# ## Now we'll load the rasters.
+# jnorm_rast <- raster(jnorm)
+# j2013_rast <- raster(j2013)
+# 
+# # Now we can do simple subtraction to get the anomaly by subtracting 2014 
+# # from the 30 year normal map
+# anomCalc <- function(x, y) {
+#   return(x - y)
+# }
+# 
+# anom_rast <- raster::overlay(j2013_rast,jnorm_rast,fun = anomCalc)
+# 
+# plot(anom_rast)
 ```
 
