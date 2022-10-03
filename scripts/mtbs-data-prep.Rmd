@@ -193,30 +193,24 @@ mtbs_west_fs_sub2$End_Day <- ifelse(mtbs_west_fs_sub2$State == "AZ" | mtbs_west_
 
 
 ```{r}
-#save subset mtbs as shapefile
 #save mtbs zones as shapefiles
-writeVector(mtbs_west_fs_sub2, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"), overwrite = TRUE)
+# writeVector(mtbs_west_fs_sub2, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"), overwrite = TRUE)
 
 # plot(mtbs_fs_int[1])
 # plot(ownership[1], add = T, color = "red")
 ```
 
 
-### Remove duplicate perimeters
+### merge overlapping/ duplicate fire perimeters from same year
 ```{r}
-#remove identical fire perimeter from MTBS - identified this duplicate perimeter in Arc
-# CA3985812091220200817 = CA4009112093120200817
-mtbs_west_fs_sub3 = mtbs_west_fs_sub2[-(mtbs_west_fs_sub2$Fire_ID == 'CA4009112093120200817'), ]
+# mtbs_west_fs_sub2 = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+
+#remove 2021 fires from mtbs data
+perims_sub_21 = mtbs_west_fs_sub2[mtbs_west_fs_sub2$Fire_Year == 2021,]
+mtbs_west_fs_sub_no21 = mtbs_west_fs_sub2[mtbs_west_fs_sub2$Fire_Year < 2021,]
 ```
 
-Separate mtbs data from 2021 data
-```{r}
-#remove 2021 fires from data
-perims_sub_21 = mtbs_west_fs_sub3[mtbs_west_fs_sub3$Fire_Year == 2021,]
-mtbs_west_fs_sub_no21 = mtbs_west_fs_sub3[mtbs_west_fs_sub3$Fire_Year < 2021,]
-```
-
-Remove incomplete fire perimeters from 2021
+Merge overlapping fire perimeters from 2021 - keeping attributes from fire perimeter with higher row.id
 ```{r}
 
 #dissolve overlapping perimeters in 2021 data, but keep Fire ID attribute
@@ -226,20 +220,9 @@ Remove incomplete fire perimeters from 2021
 perims_sub_21 = sf::st_as_sf(perims_sub_21)
 perims_sub_21 = st_transform(perims_sub_21, 5070)
 
-#turn of s2 processing to avoid spherical geometry errors
-sf::sf_use_s2(FALSE)
-#fix geometry
-perims_sub_21 = st_make_valid(perims_sub_21)
-
-
-
-perims21_intersect <- st_intersection(perims_sub_21)%>% 
-  mutate(id_int=seq(from=1, to=nrow(.), by=1)) %>%
-  st_collection_extract(perims21_intersect)
-
-perims21_intersect_values = perims21_intersect %>%
-  mutate(class_list=map_chr(origins,  ~ paste0(class[.], collapse = "; ")),
-         value_sum=map_dbl(origins,  ~ sum(value[.])))
+#add col for row names
+perims_sub_21 = perims_sub_21 %>%
+  mutate(row.id = as.integer(as.numeric(rownames(.))))
 
 #find overlapping perimeters
 perims21int = st_intersects(perims_sub_21) %>% 
@@ -252,103 +235,66 @@ perims21int = st_intersects(perims_sub_21) %>%
 
 #merge overlapping geometries 
 perims_ag = perims_sub_21 %>% 
-  mutate(row.id = as.integer(as.numeric(rownames(.)))) %>%
   subset(row.id %in% perims21int$row.id) %>% #keep only intersecting perims
   inner_join(., perims21int) %>%
   group_by(agID) %>%
   summarize(geometry = st_union(geometry),
             row.id = max(row.id)) #name polygon based on higher row id for merged geometries
 
-#repeat for overlaps
+#repeat for overlaps in new layer
+perims21int2 = perims_ag %>% 
+  st_intersects()#overlaps are 13,14 & 5,9
 
-perims21int2 = st_intersects(perims_ag) #overlaps are 13,14 & 5,9
+perims_ag$agID2 = c(1,2,3,4,5,6,7,8,5,10,11,12,13,13,15,16,17,18) #assign new aggregate id to merge additional overlappign polygons
+
+#merge overlapping geometries 
+perims_ag2 = perims_ag %>% 
+  group_by(agID2) %>%
+  summarize(geometry = st_union(geometry),
+            row.id = max(row.id)) %>% #name polygon based on higher row id for merged geometries
+  data.frame() %>%
+  inner_join(., perims_sub_21, by = 'row.id') %>%
+  rename(geometry = geometry.x) %>%
+  dplyr::select(Fire_ID, Fire_Year, Start_Day, End_Day, State, geometry) %>%
+  st_as_sf()
+
+#remove intersecting perimeters from perims21 spdf and add back in merged perims
+perims21_merged_all = perims_sub_21 %>%
+  subset(., !(row.id %in% perims21int$row.id)) %>% #remove intersecting perims
+  dplyr::select(Fire_ID, Fire_Year, Start_Day, End_Day, State, geometry) %>%
+  rbind(., perims_ag2)
+  
+#check for intersects
+int_test = perims21_merged_all %>% 
+  st_intersects() #looks good! no more overlaps :)
+
+#merge with mtbs perims 1985-2020
+mtbs_west_fs_sub3 = mtbs_west_fs_sub_no21 %>%
+  sf::st_as_sf() %>%
+  st_transform(., 5070) %>%
+  rbind(., perims21_merged_all)
+
+
+#remove identical fire perimeter from MTBS - identified this duplicate perimeter in Arc
+# CA3985812091220200817 = CA4009112093120200817
+mtbs_west_fs_sub4 = mtbs_west_fs_sub3[(mtbs_west_fs_sub3$Fire_ID != 'CA4009112093120200817'), ]
+
+#convert back to spatvec
+perims21_merged_all = vect(perims21_merged_all)  
+mtbs_west_fs_sub4 = vect(mtbs_west_fs_sub4)
+```
+
+```{r}
+#write out 2021 fire perims for GEE
+writeVector(perims21_merged_all, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/perims21_merged_all.shp"), overwrite = TRUE)
+
+
+#write updated fire perims for study
+writeVector(mtbs_west_fs_sub4, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"), overwrite = TRUE)
 
 ```
 
 
-
-
-#turn of s2 processing to avoid spherical geometry errors
-# sf::sf_use_s2(FALSE)
-# #fix geometry
-# perims_sub_21 = st_make_valid(perims_sub_21)
-# 
-# parts <- st_cast(st_union(perims_sub_21, by_feature = TRUE),"POLYGON")
-# #
-# clust <- data.frame(st_intersects(perims_sub_21, parts))
-# 
-# #
-# diss <- cbind(perims_sub_21, clust) %>%
-#   group_by(clust) %>%
-#   summarize(box = paste(box, collapse = ", "))
-
-# https://gis.stackexchange.com/questions/323038/dissolve-only-overlapping-polygons-in-r-using-sf
-
-# perims21_join = st_join(perims_sub_21, join = st_intersects)
-
-#find overlapping perimeters
-# perims21int = st_intersects(perims_sub_21) %>% 
-#   data.frame() %>%
-#   mutate(sum = row.id - col.id) %>%
-#   subset(sum != 0) %>%
-#       dplyr::select(-sum) %>%
-#   pivot_wider(names_from = row.id,
-#               values_from = col.id) %>%
-#     t() %>%
-#   data.frame() %>%
-#   mutate(rn = as.integer(as.numeric(rownames(.)))) %>%
-#         mutate(merge_id = rowSums(., na.rm = TRUE)) #add unique ID for aggregating intersecting perimeters
-
-# # parts <- st_cast(st_union(perims_sub_21),"POLYGON")
-# # 
-# clust <- unlist(st_intersects(perims_sub_21, parts))
-# # 
-# diss <- cbind(perims_sub_21, clust) %>%
-#   group_by(clust) %>%
-#   summarize(box = paste(box, collapse = ", "))
-
-
-# perims21int = perims21int[colnames(perims21int),]
-#   summarise_all(sum, na.rm = TRUE) 
-# 
-# #add perimeter ID to mtbs_west_sub to index from the reburn dataframe
-# perims21_overlap = perims_sub_21 %>%
-#   mutate(index = 1:nrow(perims_sub_21)) %>%
-#   subset(index %in% perims21int$row.id)
-# 
-# 
-# 
-# #union
-# perims21_union = st_union(perims_sub_21, by_feature = TRUE)
-# perims21_union2 = st_union(perims_sub_21, by_feature = FALSE)
-# # r = rast(perims_sub_21, resolution = 30, crs = "epsg:5070")
-# 
-# perims21_union3 = st_union(st_combine(perims_sub_21))
-
-# perims_sub_21_union = union(perims_sub_21)
-# perims_sub_21_union$sum <- rowSums(data.frame(perims_sub_21_union))
-# plot(perims_sub_21_union, "sum")
-# 
-# perims_sub_21_ag = aggregate(perims_sub_21, dissolve = FALSE)
-
-# perims_sub_21_aggregate = aggregate(perims_sub_21, dissolve = TRUE)
-# 
-# perims_sub_21 = sf::st_as_sf(perims_sub_21)
-# 
-# #turn of s2 processing to avoid spherical geometry errors
-# sf::sf_use_s2(FALSE)
-# #fix geometry
-# perims_sub_21 = st_make_valid(perims_sub_21)
-# 
-# #re-project for st_union to planar coordinate system
-# perims_sub_21 = st_transform(perims_sub_21, 5070)  
-# 
-# #union overlapping polygons
-# perims_21_union = st_union(perims_sub_21, by_feature = TRUE)
-# 
-# perims_21_union = st_cast(st_union(perims_sub_21, by_feature = TRUE), "POLYGON")
-
----------------------------------------------------
 
 Keep only perimeters that were included in reburns - decided not to do this in case we want to predict to areas that didn't reburn
 ```{r}
