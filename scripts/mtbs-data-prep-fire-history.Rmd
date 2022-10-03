@@ -85,18 +85,65 @@ writeRaster(time_between_burns, datadir("/prelim-outputs/fire_history/time_betwe
 ## Calculate the number of times each cell within a fire perimeter has burned
 
 
-Create separate shapefiles for each year 
-```{r separate shapefiles by year}
-perims = readOGR(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+```{r}
+perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
 
-years = unique(perims$Fire_Year)
+perims = st_transform(perims, 5070)  
 
-for (i in 1:2) {
-    tmp = data[perims$Fire_Year == years[i], ]
-  writeOGR(tmp, dsn=getwd(), years[i], driver="ESRI Shapefile",
-           overwrite_layer=TRUE)
-   }
+r = rast(perims, resolution = 30, crs = "epsg:5070")
+r = raster(r)
+
+tic()
+rast_count = rasterize(perims, r, field = "Fire_Year", fun = "count")
+# plot(rast_count)
+toc()
+writeRaster(rast_count, datadir("/prelim-outputs/fire_history/count_burns.tif"), overwrite = TRUE)
 
 ```
 
+Tried to create reaster for each shapefile and then compile to calculate number of times burned, but ran out of memory, so using approach above. 
 
+Create separate shapefiles for each year
+```{r separate shapefiles by year}
+# perims_ogr = readOGR(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+# 
+# perim_yrs = unique(perims_ogr$Fire_Year)
+# 
+# for(i in 1:length(perim_yrs)) {
+#     tmp = perims_ogr[perims_ogr$Fire_Year == perim_yrs[i], ]
+#   writeOGR(tmp, dsn=getwd(), perim_yrs[i], driver="ESRI Shapefile",
+#            overwrite_layer=TRUE)
+#    }
+# #read in shape files for each year
+# files = list.files(datadir("/raw-data/fire-perims/fire_perims_1985_2021_by_year/"), pattern = "[.]shp$", full.names=T)
+# 
+# perims_list = lapply(files, readOGR)
+# 
+# #tranform perims_list to projected coordinate system = epsg:5070
+# albrs_crs = crs(perims)
+# 
+# transform_fun = function(shp){
+#   spTransform(shp, albrs_crs)
+# }
+# 
+# perims_list = lapply(perims_list, transform_fun)
+# 
+# #convert to sf for faster rasterization
+# perims_list_sf = lapply(perims_list, st_as_sf)
+# 
+# #convert r to "RasterLayer"
+# r_temp = raster(r)
+# 
+# ## looping list with fasterize
+# library(fasterize)
+# 
+# x <- list()
+# 
+#   for(i in 1:2){
+#   x[[1]] = rasterize(perims_list_sf[[1]], r_temp)
+# } #memory error
+# 
+# s <- stack(x)
+# # plot(s)
+
+```
