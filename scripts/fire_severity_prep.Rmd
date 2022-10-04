@@ -1,0 +1,99 @@
+---
+title: "Fire_severity_prep"
+author: "CT"
+date: "2022-10-03"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+This script preps severity CBI data from GEE for analysis 
+
+# Organize MTBS data
+
+load mtbs data
+
+```{r load data}
+# import all files in a single folder as a list 
+rastlist <- list.files(path = datadir("/raw-data/cbi-GEE"), pattern='.tif$', all.files=TRUE, full.names=TRUE)
+
+included_perims = list.files(path = datadir("/raw-data/cbi-GEE"), pattern='.tif$', all.files=TRUE, full.names=FALSE) %>% 
+  data.frame()
+
+colnames(included_perims) = 'rasterID'
+
+included_perims$Fire_ID = str_sub(included_perims$rasterID, 1, 21)
+```
+
+quality check cbi
+```{r}
+#check which fire perims were not generated
+perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+
+missing_perims = perims %>% 
+  sf::st_as_sf() %>%
+  st_transform(., 5070) %>%
+  subset(., !(Fire_ID %in% included_perims$Fire_ID ))
+
+#2021 fires still don't have imagery - 139 perims
+
+missing_perims = missing_perims %>%
+  subset(Fire_Year < 2021)
+```
+
+write files
+```{r}
+#save as new file to upload to GEE and extract CBI
+missing_perims = vect(missing_perims)  
+
+#write out 2021 fire perims for GEE
+writeVector(missing_perims, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/missing_perims.shp"), overwrite = TRUE)
+```
+
+
+Find most recently burned fires for extracting cbi to a reburn severity raster
+```{r Find most recently burned fires}
+perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+
+#extract the most recent fire from each intersection = the highest number in the list 
+perims_int = st_intersects(perims)
+
+#check intersections - looks good.
+# plot(perims[c(4, 26,993,1169),])
+
+perim_mostrecent = lapply(perims_int, max) %>% unlist()
+
+#extract second most recent fire from each intersection
+second_recent_func = function(x, na.rm) {
+  x = x[!is.na(x)]
+  if(length(x) == 0) { return(NA) }
+  x_nomax = x[x != max(x)]
+  if (length(x_nomax) == 0) { return(NA) }
+  second_recent =  max(x_nomax)
+  return(second_recent)
+}
+perim_secondrecent = lapply(perims_int, second_recent_func) %>% unlist()
+```
+
+
+Create CBI raster layers with the fire IDs from the most recent and second most recent fires
+```{r Create CBI layers}
+
+```

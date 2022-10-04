@@ -86,7 +86,7 @@ writeRaster(time_between_burns, datadir("/prelim-outputs/fire_history/time_betwe
 
 
 ```{r}
-perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub.shp"))
+perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
 
 perims = st_transform(perims, 5070)  
 
@@ -100,6 +100,9 @@ toc()
 writeRaster(rast_count, datadir("/prelim-outputs/fire_history/count_burns.tif"), overwrite = TRUE)
 
 ```
+
+---------------------------------------------------------------------
+
 
 Tried to create reaster for each shapefile and then compile to calculate number of times burned, but ran out of memory, so using approach above. 
 
