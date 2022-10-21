@@ -24,11 +24,9 @@ source(here("scripts/convenience_functions.R"))
 
 ```
 
-This script preps severity CBI data from GEE for analysis 
+This script preps severity CBI data from GEE for analysis by creating annual CBI mosiac raster layers 1985-2021
 
-# Organize MTBS data
-
-load mtbs data
+load data
 
 ```{r load data}
 # import all files in a single folder as a list 
@@ -42,7 +40,7 @@ colnames(included_perims) = 'rasterID'
 included_perims$Fire_ID = str_sub(included_perims$rasterID, 1, 21)
 ```
 
-quality check cbi
+quality check cbi - locate missing perimeters
 ```{r}
 #check which fire perims were not generated
 perims = vect(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
@@ -54,46 +52,181 @@ missing_perims = perims %>%
 
 #2021 fires still don't have imagery - 139 perims
 
-missing_perims = missing_perims %>%
+missing_perims = missing_perims %>% 
   subset(Fire_Year < 2021)
+#no more missing perims!
+
+missing_perims = missing_perims %>% 
+  subset(Fire_Year > 2020)
+#got all 2021 fires!
+
 ```
 
-write files
+write missing perimeter files for GEE - completed
 ```{r}
-#save as new file to upload to GEE and extract CBI
-missing_perims = vect(missing_perims)  
-
-#write out 2021 fire perims for GEE
-writeVector(missing_perims, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/missing_perims.shp"), overwrite = TRUE)
+# #save as new file to upload to GEE and extract CBI
+# missing_perims = vect(missing_perims)  
+# 
+# #write out 2021 fire perims for GEE
+# writeVector(missing_perims, file = datadir("/raw-data/fire-perims/mtbs_perimeter_data/missing_perims.shp"), overwrite = TRUE)
 ```
 
+
+# create raster layer for each fire year 1985-2021
+
+```{r create folders}
+# 
+#   years <- as.character(1985:2021)
+#   for(i in 1:length(years)){
+#     folder_i <- paste(
+#       here(),
+#       "/data/raw-data/cbi-GEE/",
+#       years[i],
+#       sep = ""
+#     )
+#   
+#     dir.create(folder_i)
+#   }
+
+```
+
+
+Move rasters for each year into their respective folders
+```{r move files}
+
+#   tiff_list <- list.files(here("data/raw-data/cbi-GEE"))
+# 
+# # removing files using years vector from above chunk
+#   tiff_list <- tiff_list[!(tiff_list %in% years)]
+# 
+# # get the years of the tiff list
+#   yrs_tiffs <- str_sub(tiff_list, 14, 17)
+# 
+# # loop through years and move files
+#   for(yr in years){
+#   
+#     tiff_ids_yr <- which(yrs_tiffs == yr)
+#   
+#     # from file path
+#     fp_from <- paste(
+#       here(),
+#       "/data/raw-data/cbi-GEE/",
+#       sep = ""
+#     )
+#   
+#     # to the file
+#     fp_to <- paste(
+#       here(),
+#       "/data/raw-data/cbi-GEE/",
+#       yr, "/",
+#       sep = ""
+#     )
+#   
+#     # copy files
+#     file.copy(
+#       from = paste(fp_from, tiff_list[tiff_ids_yr], sep = ""),
+#       to = paste(fp_to, tiff_list[tiff_ids_yr], sep = "")
+#     )
+#   }
+
+```
+
+
+create cbi raster for each fire year
+```{r}
+#get files
+filelist <- list.files(path = datadir("/raw-data/cbi-GEE/2002"), pattern='.tif$', all.files=TRUE, full.names=TRUE)
+
+#convert to raster
+rast.list <- lapply(1:length(filelist), function(x) {raster(filelist[x])})
+
+rast.list$fun <- max
+tic()
+rast.mosaic <- do.call(mosaic,rast.list) 
+writeRaster(rast.mosaic, datadir("/raw-data/cbi-GEE/cbi_2002.tif"), overwrite = TRUE)
+toc()
+```
+
+as a function
+```{r}
+#loop through all folders
+years = as.character(1987:2021)
+
+  for(yr in years){
+    
+    #get file list
+    filelist <- list.files(paste(
+      here(),
+      "/data/raw-data/cbi-GEE/",
+      yr, "/",
+      sep = ""), 
+      pattern='.tif$',
+      all.files=TRUE, full.names=TRUE)
+    
+    #convert to raster
+    rast.list <- lapply(1:length(filelist), function(x) {raster(filelist[x])})
+    
+    rast.list$fun <- max
+    
+    #mosiac raster
+    tic()
+    rast.mosaic <- do.call(mosaic,rast.list)
+    
+    #write raster 
+    writeRaster(rast.mosaic, paste(datadir(""),"/raw-data/cbi-GEE/cbi_", yr, ".tif", sep = ""))
+    toc()
+    }
+
+```
+
+
+```{r}
+#extrat all years cbi to all sample points
+#calculate most recent fire and second most recent fire severity from each point using burn year
+
+```
+
+
+
+---------------------------------------------------------------------------------
 
 Find most recently burned fires for extracting cbi to a reburn severity raster
+
+This is does not work for extracting reburn rasters because many perimeters are involved in >2 fires
+
 ```{r Find most recently burned fires}
-perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+# perims = st_read(datadir("/raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+# 
+# 
+# #extract the most recent fire from each intersection = the highest number in the list 
+# perims_int = st_intersects(perims)
+# 
+# #check intersections - looks good.
+# # plot(perims[c(4, 26,993,1169),])
+# 
+# perim_mostrecent = lapply(perims_int, max) %>% 
+#   unlist() %>% 
+#   unique() #remove duplicates
+# 
+# perim_mostrecent_poly = perims[(perims %in% perim_mostrecent),]
+# 
+# #extract second most recent fire from each intersection
+# second_recent_func = function(x, na.rm) {
+#   x = x[!is.na(x)]
+#   if(length(x) == 0) { return(NA) }
+#   x_nomax = x[x != max(x)]
+#   if (length(x_nomax) == 0) { return(NA) }
+#   second_recent =  max(x_nomax)
+#   return(second_recent)
+# }
+# perim_secondrecent = lapply(perims_int, second_recent_func) %>% 
+#   unlist() %>% 
+#   unique()  #remove duplicates
+# 
+# #extract Fire_ID by index
+# perim_mostrecent_polys = perims[c(perim_mostrecent),]
+# perim_secondrecent_polys = perims[c(perim_secondrecent),]
 
-#extract the most recent fire from each intersection = the highest number in the list 
-perims_int = st_intersects(perims)
 
-#check intersections - looks good.
-# plot(perims[c(4, 26,993,1169),])
-
-perim_mostrecent = lapply(perims_int, max) %>% unlist()
-
-#extract second most recent fire from each intersection
-second_recent_func = function(x, na.rm) {
-  x = x[!is.na(x)]
-  if(length(x) == 0) { return(NA) }
-  x_nomax = x[x != max(x)]
-  if (length(x_nomax) == 0) { return(NA) }
-  second_recent =  max(x_nomax)
-  return(second_recent)
-}
-perim_secondrecent = lapply(perims_int, second_recent_func) %>% unlist()
 ```
 
-
-Create CBI raster layers with the fire IDs from the most recent and second most recent fires
-```{r Create CBI layers}
-
-```

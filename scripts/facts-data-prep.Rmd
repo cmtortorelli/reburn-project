@@ -1,0 +1,147 @@
+---
+title: "FACTS data prep"
+author: "CT"
+date: "2022-10-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(sf)
+library(readxl)
+library(terra)
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+## Open and clip the relevant FACTS files to the west
+```{r}
+
+sf_use_s2(FALSE)
+
+west_states = c('CA', 'WA', 'OR', 'NV', 'AZ', 'NM', 'CO', 'TX', 'WY', 'MT', 'ID', 'UT')
+  
+facts.fueltrt <- st_read(datadir("raw-data/facts/S_USA.Activity_HazFuelTrt_PL.shp"))
+facts.fueltrt <- facts.fueltrt[facts.fueltrt$STATE_ABBR %in% west_states,] # restrict to western states
+facts.fueltrt <- st_buffer(facts.fueltrt,0)
+
+facts.reforest <- st_read(datadir("raw-data/facts/S_USA.Activity_SilvReforestation.shp"))
+facts.reforest <- facts.reforest[facts.reforest$STATE_ABBR %in% west_states,] # restrict to western states
+facts.reforest <- st_buffer(facts.reforest,0)
+
+facts.tsi <- st_read(datadir("raw-data/facts/S_USA.Activity_SilvTSI.shp"))
+facts.tsi <- facts.tsi[facts.tsi$STATE_ABBR %in% west_states,] # restrict to western states
+facts.tsi <- st_buffer(facts.tsi,0)
+
+facts.harvest <- st_read(datadir("raw-data/facts/S_USA.Activity_TimberHarvest.shp"))
+facts.harvest <- facts.harvest[facts.harvest$STATE_ABBR %in% west_states,] # restrict to western states
+facts.harvest <- st_buffer(facts.harvest,0)
+```
+
+Rename attributes
+```{r}
+names(facts.reforest)[names(facts.reforest) == "ACTIVITY_N"] <- "ACTIVITY"
+names(facts.reforest)[names(facts.reforest) == "METHOD_DES"] <- "METHOD"
+
+names(facts.tsi)[names(facts.tsi) == "ACTIVITY_N"] <- "ACTIVITY"
+names(facts.tsi)[names(facts.tsi) == "METHOD_DES"] <- "METHOD"
+facts.fueltrt$SUBUNIT_NA <- NA
+
+
+names(facts.harvest)[names(facts.harvest) == "ACTIVITY_N"] <- "ACTIVITY"
+names(facts.harvest)[names(facts.harvest) == "METHOD_DES"] <- "METHOD"
+
+#names(facts.fueltrt)[names(facts.fueltrt) == "SUBUNIT"] <- "SUBUNIT_CN"
+names(facts.fueltrt)[names(facts.fueltrt) == "ASU_NBR_UN"] <- "SUBUNIT_SI"
+names(facts.fueltrt)[names(facts.fueltrt) == "ASU_UOM"] <- "SUBUNIT_UO"
+facts.fueltrt$SUBUNIT_NA <- NA
+
+keep.cols <- c("SUID","ACTIVITY","DATE_AWARD","DATE_COMPL","TREATMENT_","METHOD","NBR_UNITS_","UOM","DATE_PLANN","COST_PER_U","METHOD","EQUIPMENT_","PRODUCTIVI","TREATMENT_","DATA_SOURC","SUBUNIT","DATA_SOU_1","GIS_ACRES","SHAPE_AREA","NBR_UNITS_","UOM","SUBUNIT_SI","SUBUNIT_UO","SUBUNIT_NA")
+
+facts.fueltrt <- facts.fueltrt[,keep.cols]
+facts.reforest <- facts.reforest[,keep.cols]
+facts.tsi <- facts.tsi[,keep.cols]
+facts.harvest <- facts.harvest[,keep.cols]
+```
+
+## Merge the layers
+```{r}
+
+facts <- rbind(facts.fueltrt,facts.reforest,facts.tsi,facts.harvest)
+
+st_write(facts,datadir("raw-data/facts/compiled/facts_merged.gpkg"),delete_dsn=TRUE)
+
+```
+
+
+### Clean compiled facts
+```{r}
+#read in data
+facts <- st_read(datadir("raw-data/facts/compiled/facts_merged.gpkg"))
+```
+
+```{r}
+## Check for reporting discrepancies in reported size vs. actual size
+# remove those units where reported and GIS acres do not match. Check either NBR_UNTIS or SUBUNIT_S and allow either to match
+# making sure GIS acres is not much larger than reported acres
+# Doing this because have found that some units cover far more area spatially than were really reported to be treated
+facts <- facts %>%
+  mutate( reporting_discrepancy = ! (((((NBR_UNITS_ > (GIS_ACRES*.75)) ) | ((NBR_UNITS_ > (GIS_ACRES - 25)) ))) |
+                                       ((((SUBUNIT_SI > (GIS_ACRES*.75)) ) | ((SUBUNIT_SI > (GIS_ACRES - 25)) )))) )
+
+# If completed date is blank, use awarded date. otherwise keep completed date as it was.
+facts$DATE_COMPOSITE <- ifelse(is.na(facts$DATE_COMPL),facts$DATE_AWARD %>% as.character,facts$DATE_COMPL %>% as.character)
+facts$year <- as.numeric(substr(facts$DATE_COMPOSITE,1,4))
+# Remove management that was not actually performed (e.g., just planned)
+facts <- facts[!is.na(facts$year),]
+```
+
+## Lump treatments by activity
+```{r}
+
+# Defin the different management types that we care about
+#trees were planted
+plant <- c("Plant Trees", "Fill-in or Replant Trees", "Fill-in Seed or Reseed Trees")
+
+#mechanical thinning
+thin <- c("Precommercial Thin","Commercial Thin","Thinning for Hazardous Fuels Reduction","Single-tree Selection Cut (UA/RH/FH)", "Inland Fish Thinning for Fish Habitat Improvement", "Liberation Cut", "Precommercial thinning for visual", "Wildlife Habitat Precommercial thinning", "Anadromous Fish Thinning for Fish Habitat Improvement", "Site Preparation for Natural Regeneration - Other", "Site Preparation for Planting - Other", "Site Preparation for Seeding - Other", "Tree Release and Weed")
+
+#timber harvest/ salvage
+harvest <- c("Stand Clearcut (w/ leave trees) (EA/RH/FH)", "Salvage Cut (intermediate treatment, not regeneration)","Stand Clearcut (EA/RH/FH)","Patch Clearcut (EA/RH/FH)","Overstory Removal Cut (from advanced regeneration) (EA/RH/FH)","Sanitation Cut","Group Selection Cut (UA/RH/FH)","Overstory Removal Cut (from advanced regeneration) (EA/RH/FH)","Seed-tree Seed Cut (with and without leave trees) (EA/RH/NFH)","Shelterwood Removal Cut (EA/NRH/FH)", "Shelterwood Preparatory Cut (EA/NRH/NFH)", "Improvement Cut", "Shelterwood Establishment Cut (with or without leave trees) (EA/RH/NFH)", "Seed-tree Final Cut (EA/NRH/FH)", "Fuel Break", "Harvest Without Restocking", "Patch Clearcut (w/ leave trees) (EA/RH/FH)", "Recreation Removal of hazard trees and snags - Area", "Seed-tree Preparatory Cut (EA/NRH/NFH)", "Seed-tree Removal Cut (w/ leave trees) (EA/NRH/FH)", "Shelterwood Removal Cut (w/ leave trees) (EA/NRH/FH)", "Two-aged Coppice Cut (w/res) (2A/RH/FH)","Two-aged Preparatory Cut (w/res) (2A/NRH/NFH)", "Two-aged Seed-tree Seed and Removal Cut (w/res) (2A/RH/FH)", "Two-aged Shelterwood Establishment and Removal Cut (w/ res) (2A/RH/FH)", "Two-aged Shelterwood Establishment Cut (w/res) (2A/RH/NFH)", "Two-aged Stand Clearcut (w/res) (2A/RH/FH)", "Wildlife Habitat Intermediate cut", "Wildlife Habitat Regeneration cut", "Coppice Cut (EA/RH/FH)", "Coppice Cut (w/leave trees) (EA/RH/FH)", "Two-aged Shelterwood Final Removal Cut (w/res) (2A/NRH/FH)", "Shelterwood Staged Removal Cut (EA/NRH/NFH)", "Two-aged Patch Clearcut (w/res) (2A/RH/FH)")
+
+#planting prep
+planting_prep <- c("Site Preparation for Planting - Mechanical","Site Preparation for Planting - Manual","Site Preparation for Planting - Burning", "Site Preparation for Planting - Other","Site Preparation for Natural Regeneration - Manual","Site Preparation for Natural Regeneration - Burning", "Slashing - Pre-Site Preparation", "Tree Release and Weed","Control of Understory Vegetation")
+
+#other fuels treatments
+fuels <- c("Piling of Fuels, Hand or Machine","Burning of Piled Material","Yarding - Removal of Fuels by Carrying or Dragging","Rearrangement of Fuels","Chipping of Fuels","Compacting/Crushing of Fuels","Pruning to Raise Canopy Height and Discourage Crown Fire","Prune", "Wildlife Habitat Slash treatment", "Wildlife Habitat Mechanical treatment")
+
+#prescribed fire       
+pfire <- c("Underburn - Low Intensity (Majority of Unit)","Broadcast Burning - Covers a majority of the unit", "Control of Understory Vegetation- Burning", "Jackpot Burning - Scattered concentrations", "Natural regeneration - prescribed fire", "Wildlife Habitat Prescribed fire")
+
+mechanical_fuels_treat = c(thin, harvest, fuels)
+pfire
+
+#select just management we care about for influencing reburn severity
+manage = c(mechanical_fuels_treat, pfire)
+
+#managed within 10 years of repeat burn - occurred in between fires
+
+#see what activites remain/ are not included
+treatments = facts %>% data.frame() %>%
+  group_by(TREATMENT_, METHOD) %>% 
+  count()
+
+not_included = facts %>% 
+  data.frame() %>%
+  filter(!ACTIVITY %in% manage) %>%
+  group_by(TREATMENT_, ACTIVITY) %>%
+  count()
+#these don't seem to influence woody fuels - do we want to include understory fuels treatments as well?
+```
+
+
+

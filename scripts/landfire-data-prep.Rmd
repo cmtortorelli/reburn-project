@@ -1,0 +1,85 @@
+---
+title: "Topography data prep"
+author: "CT"
+date: "2022-10-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+library(spatialEco)
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+This script preps landfire data for the reburn project
+
+
+move temp files to external drive to save disk space
+
+currently temp files saved to "C:\\Users\\tortorec\\AppData\\Local\\Temp\\RtmpQxwFZk"
+
+```{r}
+# write("TMP = 'D:/Rtemp'", file=file.path(Sys.getenv('R_USER'), '.Renviron'))
+# tempdir()
+
+```
+
+
+### Calculate heat load 
+Creates raster class object of McCune & Keon (2002) Heat Load Index - https://rdrr.io/cran/spatialEco/man/hli.html
+
+
+read in cropped elevation raster
+```{r}
+#read in raster
+elev = raster(datadir("/raw-data/Landfire/LC20_Elev_220_crop.tif"))
+
+#set values <0 to NA to reduce file size for faster processing
+elevNA = reclassify(elev, cbind(-Inf, 0, NA), right=FALSE)
+dataType(elevNA) <- 'INT2S'  
+
+writeRaster(elevNA, datadir("/raw-data/Landfire/LC20_Elev_220_crop_NA.tif"), overwrite = TRUE)
+```
+
+calcualte heat load
+```{r}
+
+heat.load <- hli(elev)
+
+writeRaster(heat.load, datadir("/raw-data/Landfire/heat_load.tif"), overwrite = TRUE)
+```
+
+
+Remove temp files to clean hard drive
+
+https://stackoverflow.com/questions/25426405/raster-package-taking-all-hard-drive
+```{r}
+dirname(rasterTmpFile()) 
+
+#remove temp files older than 30 mins
+removeTmpFiles(0.5)
+```
+
+Calculate topographic position index for 2000m scale - following Cansler et al 2022
+https://rdrr.io/cran/spatialEco/man/tpi.html
+```{r}
+#spatialEco
+tpi = tpi(elevNA, scale = 2000, win = "circle")
+
+writeRaster(tpi, datadir("/raw-data/prelim-outputs/topography/tpi.tif"), overwrite = TRUE)
+```
