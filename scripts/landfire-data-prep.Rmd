@@ -75,11 +75,30 @@ dirname(rasterTmpFile())
 removeTmpFiles(0.5)
 ```
 
-Calculate topographic position index for 2000m scale - following Cansler et al 2022
+### Calculate topographic position index - 
+following Cansler et al 2022
 https://rdrr.io/cran/spatialEco/man/tpi.html
+
+-this isn't working properly, trying tiling the raster first. 
+
+Decided to go with 500m TPI to reduce processing time and because Cansler et al 2022 found them to be comparable for predciting reburn severity
 ```{r}
 #spatialEco
-tpi = tpi(elevNA, scale = 2000, win = "circle")
+# testDEM = raster(datadir("/raw-data/Landfire/test_dem_clip.tif"))
 
-writeRaster(tpi, datadir("/raw-data/prelim-outputs/topography/tpi.tif"), overwrite = TRUE)
+library(meteo)
+elevNA = raster(datadir("/raw-data/Landfire/LC20_Elev_220_crop_NA.tif"))
+#generate 30km tiles with 600m buffer for DEM
+t = tiling(elevNA, tilesize = 30000, overlapping = 600, asfiles = T, tilename = "DEM_tile_", tiles_folder = datadir("raw-data/Landfire/DEM_tiles/"))
+```
+
+
+```{r}
+r = raster(datadir("/raw-data/Landfire/DEM_tiles/DEM_tile_1.tif"))
+
+tic()
+tpi500 = tpi(elevNA, scale = 500, win = "circle")
+
+writeRaster(tpi500, datadir("prelim-outputs/topography/tpi_1.tif"), overwrite = TRUE)
+toc()
 ```

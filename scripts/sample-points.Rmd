@@ -1,0 +1,62 @@
+---
+title: "sample_points"
+author: "CT"
+date: "2022-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+This script generates sample points for the drivers of reburn severity project
+
+## Generate sample points
+generate sample points from fire history raster
+```{r}
+burns_r = raster(datadir("/prelim-outputs/fire_history/count_burns.tif"))
+
+#convert raster to points for only reburned areas (x > 1 time burned)
+reburn_points = rasterToPoints(burns_r, fun=function(x){x>1}, spatial = TRUE)
+#36,612,013 points
+
+#thin to 570m
+plot(reburn_points[1:10000,])
+```
+
+## Thin to 570m between points
+```{r}
+reburn_df = reburn_points %>% data.frame()
+summary(reburn_df)
+```
+
+
+## Export data to points
+```{r}
+
+```
+
+## Remove points based on criteria
+
+- Within 500m of edge of fire perimieter (limit edge effects and spatial data inconsistencies)
+- not on FS land (focus analysis on forested FS land, and for management)
+- Less than 25% cover at time of reburn (focus analysis on forested areas)
+- second fire occurred before 2001 (limited by MODIS for day of fire weather)
+- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimieter)
+- 
