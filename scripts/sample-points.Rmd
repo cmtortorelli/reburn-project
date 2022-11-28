@@ -27,36 +27,203 @@ source(here("scripts/convenience_functions.R"))
 
 This script generates sample points for the drivers of reburn severity project
 
+
+
+
 ## Generate sample points
 generate sample points from fire history raster
 ```{r}
-burns_r = raster(datadir("/prelim-outputs/fire_history/count_burns.tif"))
+#read in rater with count of number of times each pixel burned
+burns_r = raster(datadir("/prelim-outputs/fire_history/count_burns_int.tif"))
+
+#generate 270m raster to snap to when resampling
+r270 = aggregate(burns_r, fact=9, fun=max, na.rm = TRUE)
+
+#resample to 270m
+burns_r270 = raster::resample(burns_r, r270, method = "ngb", filename = datadir("/prelim-outputs/fire_history/count_burns_resamp270m.tif"))
+
 
 #convert raster to points for only reburned areas (x > 1 time burned)
-reburn_points = rasterToPoints(burns_r, fun=function(x){x>1}, spatial = TRUE)
-#36,612,013 points
+reburn_points = rasterToPoints(burns_r270, fun=function(x){x>1}, spatial = TRUE)
 
-#thin to 570m
-plot(reburn_points[1:10000,])
+#write reburn points to shp
+writeOGR(obj=reburn_points, dsn=datadir("/prelim-outputs/points"), layer="reburn_points_270test", driver="ESRI Shapefile")
+
+# plot(reburn_points[1:100000,])
 ```
 
-## Thin to 570m between points
+#### Buffer reburned area 
+so that we don't have any sample points within 300m of edge to limit edge effects and spatial data inconsistencies
+
+Buffer polygons inside 300m
 ```{r}
-reburn_df = reburn_points %>% data.frame()
-summary(reburn_df)
+#get reburned area - did this in arc for faster processing: 
+#> converted count_burns_int.tif to polygons %>% removed areas that only burned once
+
+reburn_poly = st_read(datadir("/prelim-outputs/fire_history/reburn_poly.shp"))
+
+# buffer size = 300m coordinates inward
+buffer_size <- (-300)
+
+# compute buffered polygons
+perims_buffered <- st_buffer(reburn_poly, buffer_size) 
+
+# remove degenerate polygons
+perims_remaining <- perims_buffered[!st_is_empty(perims_buffered),]
+
+#write perims_buffer
+st_write(perims_remaining, datadir("prelim-outputs/buffered_perims/buffered_perims.shp"))
+# perims_remaining = st_read(datadir("prelim-outputs/buffered_perims/buffered_perims.shp"))
+```
+
+Extract points that fall within the buffer to new points dataset
+```{r}
+reburn_points = st_read(datadir("prelim-outputs/points/reburn_points_270.shp"))
+
+# plot(perims[2,1])
+# plot(perims_remaining[2,1])
+
+#keep only points that fall in buffered perims
+points_buff = st_intersects(reburn_points, perims_remaining)
+points_buff_include = lengths(points_buff) > 0 
+points_buff_include = reburn_points[points_buff_include,]
+  
+  
+#write sample points
+st_write(points_buff_include, datadir("prelim-outputs/points/sample_points_buff.shp"))
+
+```
+
+### Remove points that did not burn on FS land
+```{r}
+sample_points_buff = st_read(datadir("prelim-outputs/points/sample_points_buff.shp"))
+
+ownership_fs = read_sf(datadir("/raw-data/ownership/S_USA.BasicOwnership.gdb"), "BasicOwnership") %>% rename("UNIT_NAME" = "FORESTNAME",
+                                       "OBJECTID" = "BASICOWNERSHIPID") %>%
+                subset(OWNERCLASSIFICATION == "USDA FOREST SERVICE") %>%
+                dplyr::select(SHAPE)
+
+ownership_fs = st_transform(ownership_fs, st_crs(sample_points_buff))  
+
+#keep only points that intersect ownership_fs
+points_fs = st_intersects(sample_points_buff, ownership_fs)
+points_fs_include = lengths(points_fs) > 0 
+points_fs_include = sample_points_buff[points_fs_include,]
+
+st_write(points_fs_include, datadir("prelim-outputs/points/points_buff_fs.shp"))
+
 ```
 
 
 ## Export data to points
+
+extract polygon data - MTBS & 2021 perimeter information
 ```{r}
+#perimeter data
+perims = st_read(datadir("raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+
+points_perims_int = st_intersection(sample_points_buff, perims)
+
+st_write(points_perims_int, datadir("prelim-outputs/points/points_perims_int.shp"))
 
 ```
+### Extract raster values to sample points
+
+I did this step with the extract multi values to points tool in Arc. This was failing in R because the files were too big.
+
+Extracted:
+> CBI 1985-2021
+> reburn cbi ('cni85_21')
+> prism climate norms - precip ('PRISM_ppt_30yr_normal_800mM3_annual_bil.bil')
+> prism norms - temp ('PRISM_tmean_30yr_normal_800mM3_annual_bil.bil')
+> TPI 500 ('TPI_1024.tif')
+> Elevation ('LC20_Elev_220_crop_Clip')
+> heat load
+> burn count ('count_burns.tif')
+> time between burns (time_between_burns_all.tif)
+> year of second most recent fire (secondrecent_fire_all.tif)
+> year of most recent fire (mostrecent_fire_all.tif)
+
+```{r}
+#get cbi data
+# rastlist <- list.files(path = datadir("/raw-data/cbi-GEE"), pattern='.tif$', all.files=TRUE, full.names=TRUE)
+# cbi_stack <- stack(rastlist, quick=TRUE) #stack annual cbi
+# 
+# #extract values to points
+# points_cbi = extract(cbi_stack, points_buff_include) #failing because files are too big - going to extract raster data in ArcGIS instead.
+```
+
+## Combine point data extracted from GEE with other point data
+```{r GEE point extracts}
+points = st_read(datadir("prelim-outputs/points/sample_points_buff.shp"))
+
+## read in GEE ndvi data
+ndvi1 = read_csv(datadir("prelim-outputs/GEE_points_extract/ndvi/ndvi_extract1.csv"))
+ndvi2 = read_csv(datadir("prelim-outputs/GEE_points_extract/ndvi/ndvi_extract2.csv"))
+ndvi3 = read_csv(datadir("prelim-outputs/GEE_points_extract/ndvi/ndvi_extract3.csv"))
+ndvi4 = read_csv(datadir("prelim-outputs/GEE_points_extract/ndvi/ndvi_extract4.csv"))
+ndvi5 = read_csv(datadir("prelim-outputs/GEE_points_extract/ndvi/ndvi_extract5.csv"))
+
+#combine data subsets
+ndvi = bind_rows(ndvi1, ndvi2, ndvi3, ndvi4, ndvi5)
+
+## read in GEE RAP data
+shrub1 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/ShrubExtractPoints.csv"))
+shrub2 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/ShrubExtractPoints2.csv"))
+shrub3 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/ShrubExtractPoints3.csv"))
+
+tree1 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractPoints.csv"))
+tree2 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractPoints2.csv"))
+tree3 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractPoints3.csv"))
+
+#combine data subsets
+shrub = bind_rows(shrub1, shrub2, shrub3)
+tree = bind_rows(tree1, tree2, tree3)
+
+points_reburnyr = points %>% select(pointid, mostrecent)
+
+#keep veg data for year prior to reburn
+shrubl = shrub %>% 
+  pivot_longer(!pointid, names_to = "shrub_yr", values_to = "shrub_cover") %>%
+  merge(points_reburnyr, ., all = TRUE) %>% 
+  mutate(shrub_yr = substr(shrub_yr, 1, 4),
+         subset_yr = mostrecent - 1) %>% 
+  subset(shrub_yr == subset_yr) %>%
+  select(pointid, shrub_cover)
+
+#merge GEE data to points
+points = merge(points, ndvi, all = TRUE)
+points = merge(points, shrub, all = TRUE)
+points = merge(points, tree, all = TRUE)
+```
+#### Keep veg data only for year prior to reburn
+```{r}
+points_test = points[3000:3050,]
+
+# Initiate new columns to store FACTS management history data
+points_test$shrub_reburn = NA
+points_test$tree_reburn = NA
+points_test$ndvi_reburn = NA
+
+
+
+# For each plot, get the activities that happened between the initial and reburn year
+for(i in 1:nrow(points_test)) {
+  
+  plot = points_test[i,]
+  
+  #keep value from column that occurred the year before the reburn year
+  plot$veg_year = plot$mostrecent - 1
+  col = paste0(plot$veg_year, "_SHR") 
+  
+  points_test$shrub_reburn[i] = points_test[i,which(names(points_test) == col)]
+}
+```
+
 
 ## Remove points based on criteria
 
-- Within 500m of edge of fire perimieter (limit edge effects and spatial data inconsistencies)
-- not on FS land (focus analysis on forested FS land, and for management)
-- Less than 25% cover at time of reburn (focus analysis on forested areas)
-- second fire occurred before 2001 (limited by MODIS for day of fire weather)
-- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimieter)
-- 
+- Not on FS land (focus analysis on forested FS land, and for management)
+- Less than 25% tree cover at time of reburn (focus analysis on forested areas)
+- second fire occurred before 2002 (limited by MODIS for day of fire weather)
+- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimeter)
