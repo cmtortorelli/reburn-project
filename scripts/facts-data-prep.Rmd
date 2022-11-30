@@ -73,7 +73,7 @@ facts.harvest <- facts.harvest[,keep.cols]
 
 facts <- rbind(facts.fueltrt,facts.reforest,facts.tsi,facts.harvest)
 
-st_write(facts,datadir("raw-data/facts/compiled/facts_merged.gpkg"),delete_dsn=TRUE)
+st_write(facts,datadir("raw-data/facts/compiled/facts_merged_west.gpkg"),delete_dsn=TRUE)
 
 ```
 
@@ -81,7 +81,7 @@ st_write(facts,datadir("raw-data/facts/compiled/facts_merged.gpkg"),delete_dsn=T
 ### Clean compiled facts
 ```{r Read in cleaned FACTS}
 #read in data
-facts <- st_read(datadir("raw-data/facts/compiled/facts_merged.gpkg"))
+facts <- st_read(datadir("raw-data/facts/compiled/facts_merged_west.gpkg"))
 ```
 
 ```{r}
@@ -155,52 +155,8 @@ facts_sub = facts %>%
   #select only relevant columns
   select(NEW_ACTIVITY, year)
 
+#write to gpkg
+st_write(facts_sub, datadir("raw-data/facts/compiled/facts_compiled_for_points_extract_west.gpkg"),delete_dsn=TRUE)
 ```
 
 
-```{r extract FACTS to points}
-#read in points
-points = st_read(datadir("prelim-outputs/points/sample_points_buff.shp"))
-
-# Extract FACTS history at each plot (this is just a matrix the lists the indices of each FACTS polygon that intersects each plot. Need to futher process it in the lines below to get the actual managmenet history)
-activities = st_intersects(points %>% st_transform(st_crs(facts_sub)),facts_sub)
-
-```
-
-### Get only FACTS management that occured after the intial fire and before the reburn
-```{r post-fire management}
-# Initiate new columns to store FACTS management history data
-points$facts_managed = NA
-points$facts_year = NA
-points$facts_year_mostrecent = NA
-points$facts_activity = NA
-
-
-# For each plot, get the activities that happened between the initial and reburn year
-for(i in 1:nrow(points)) {
-  
-  plot = points[i,]
-  
-  # which facts polygons overlapped the plot
-  facts_indices = activities[[i]]
-  facts_overlap = facts_sub[facts_indices,]
-  
-  #keep only years that fall between initial and reburn fire years
-  facts_keep = facts_overlap %>% filter(year > plot$secondrece & year < plot$mostrecent)
-  
-  # get the most recent year of management out of all the facts polygons that occured between the two fire years
-  facts_year_mostrecent = max(facts_keep$year)
-  facts_year_mostrecent = ifelse(facts_year_mostrecent == -Inf, NA, facts_year_mostrecent)
-
-  
-
-  # otherwise, record all the management that happened there
-  points[i,which(names(points) == "facts_managed")] = TRUE
-  points[i,which(names(points) == "facts_year")] = paste(facts_keep$year,collapse=", ")
-  points[i,which(names(points) == "facts_year_mostrecent")] = facts_year_mostrecent
-  points[i,which(names(points) == "facts_activity")] = paste(facts_keep$NEW_ACTIVITY,collapse=", ")
-}
-
-# Check to see if management occurred after the inital sampling visit
-# plots_sf$managed_after_visit = plots_sf$facts_year_mostrecent >= plots_sf$Sample_Year
-```
