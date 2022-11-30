@@ -324,8 +324,10 @@ points_cleaned_facts_perims = left_join(points_cleaned_facts, fire_id)
 
 
 #write intersected sample points
-st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
-write.csv(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.csv"))
+# st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
+# write.csv(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.csv"))
+
+# points_cleaned_facts_perims = st_read(datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
 ```
 
 # Select points for analysis based on following criteria:
@@ -357,6 +359,8 @@ points_crit = points_fs_include %>%
 
 #write data for analysis
 st_write(points_crit, datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
-write.csv(points_crit, datadir("prelim-outputs/points/points_for_analysis_11-30-22.csv"))  
+write_csv(points_crit, datadir("prelim-outputs/points/points_for_analysis_11-30-22.csv"))  
+
+points_crit = st_read(datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
 ```
 

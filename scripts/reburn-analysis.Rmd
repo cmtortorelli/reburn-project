@@ -1,0 +1,163 @@
+---
+title: "Reburn analysis"
+author: "CT"
+date: "2022-11-30"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+
+
+
+library(randomForest)
+library(ranger) #for faster random forest
+library(pdp)# for partial dependence plots (PDPs)
+
+data_dir = readLines(here("data_dir.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+Load reburn points for analysis
+```{r}
+data = read_csv(datadir("prelim-outputs/points/points_for_analysis_11-30-22.csv"))
+
+#clean data
+data = data %>%
+  rename(cbi_reburn = cni85_21) %>%
+  select(-c(LC20_Elev_, geom, grid_code)) %>% #remove column with no data
+  mutate_all(~replace(., is.na(.), time_betwe)) %>% #set NAs to 0
+  mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
+  initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
+  ecoregion = as.factor(ecoregion),
+  )
+
+
+```
+
+
+# Random forests analysis
+
+Partition data to test and train sets
+```{r}
+datarf = data %>%
+    #assign new response var for random forsets - high vs. low/mod reburn severity
+    mutate(cbi_reburn_class = cbi_reburn,
+      cbi_reburn_class = case_when(cbi_reburn <2.5 ~ 'low-mod',
+                           TRUE ~ 'high'),
+    cbi_reburn_class = as.factor(cbi_reburn_class)) %>%
+  select(-c(cbi_reburn, max_yr_mechanical, max_yr_pfire))
+  
+set.seed(222)
+ind <- sample(2, nrow(data), replace = TRUE, prob = c(0.7, 0.3))
+train <- data[ind==1,]
+test <- data[ind==2,]
+
+
+```
+
+RF settings
+>important to tune the parameters - #trees and max.depth
+>look into importance settings
+> RF with raw cbi instead of groups
+
+### Random forest in R
+```{r}
+rf <- ranger(cbi_reburn_class~., 
+             data=train, 
+             num.trees = 100,
+             max.depth = 8,
+             probability=TRUE,
+             importance = 'impurity_corrected') #look into these importance options
+
+rf
+```
+
+```{r}
+#relative importance
+sort(importance(rf))
+
+# Prediction wrapper that returns average prediction for each class
+pfun <- function(object, newdata) {
+  colMeans(predict(object, data = newdata)$predictions)
+}
+
+# Partial dependence of probability for each class on petal width
+p <- partial(rf, pred.var = "time_betwe", pred.fun = pfun)
+
+ggplot(p, aes(time_betwe, yhat, color = yhat.id)) +
+  geom_line() +
+  theme(legend.title = element_blank())
+```
+
+GAMs
+
+Variable selection for GAMs - 
+> based on prediction rather than sig.
+> could use RF importance score - how to best generate? (RF: rm pointid, fire years, combine facts, change facts 0s)
+> 
+
+Testing model fit:
+>tileing > random selection
+>change 
+
+```{r}
+library(mgcv)
+
+g1 <- bam(cbi_reburn ~ s(AET) + s(time_betwe, by = ecoregion) + s(time_betwe, AET) +
+    s(vpd_02_21) + s(th_02_21) + s(fm_02_21) + s(fm100_02_2) + s(vs_02_21) + s(TPI_1024) + s(cbi_initial) + ecoregion, 
+    data = train, 
+    method = "REML")
+g1
+summary(g1)
+k.check(g1)
+gam.check(g1)
+
+g2 <- bam(cbi_reburn ~ s(time_betwe, by = ecoregion),
+    data = train, 
+    method = "REML")
+
+g2 <- bam(cbi_reburn ~ s(time_betwe, by = ecoregion),
+    data = train, 
+    method = "REML")
+
+g3 <- bam(cbi_reburn ~ s(time_betwe, AET),
+    data = train, 
+    method = "REML")
+
+
+plot(g1)
+vis.gam(g1, view = c("time_betwe", "AET"),
+    theta = 50, n.grid = 50, lwd = 0.4)
+    
+vis.gam(g2, view = c("time_betwe", "ecoregion"),
+    theta = 50, n.grid = 50, lwd = 0.4)
+    
+plot(g2)
+
+summary.gam(g1)
+
+newdata = data.frame(cbi_reburn = seq(0.5,3, length.out = 1000))
+p1 = predict(g1, newdata = newdata, type = "response" )
+```
+
+Other options for variable selection:
+> Lasso prior
+
+>group variable list: (explore correlations )
+-weather
+-topography (TPI)
+-history (time since fire, number of burns, intial cbi, management)
+-fuels? (ndvi, tree, shrub)
+-climate (AET, PRISM)
+
+use GAMs to assess predictive performance with and without predictors
+
+
+
+
