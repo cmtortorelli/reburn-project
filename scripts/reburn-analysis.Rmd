@@ -9,14 +9,16 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-library(tidyverse)
-library(here)
+
 
 
 
 library(randomForest)
-library(ranger) #for faster random forest
+library(ranger) #a faster version of the RF algorithm
 library(pdp)# for partial dependence plots (PDPs)
+
+library(tidyverse)
+library(here)
 
 data_dir = readLines(here("data_dir.txt"), n=1)
 source(here("scripts/convenience_functions.R"))
@@ -24,41 +26,59 @@ source(here("scripts/convenience_functions.R"))
 ```
 
 Load reburn points for analysis
+
 ```{r}
-data = read_csv(datadir("prelim-outputs/points/points_for_analysis_11-30-22.csv"))
+data = st_read(datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
 
 #clean data
-data = data %>%
-  rename(cbi_reburn = cni85_21) %>%
-  select(-c(LC20_Elev_, geom, grid_code)) %>% #remove column with no data
-  mutate_all(~replace(., is.na(.), time_betwe)) %>% #set NAs to 0
+data_clean = data %>% 
+  rename(cbi_reburn = cni85_21) %>% data.frame() %>%
+  #remove rows where ndvi = NA (29 rows) 
+  drop_na(ndvi) %>%
+  #lump facts management into one variable (time since management)
+  mutate(time2manage = pmin(pfire_yrs2reburn, mechanical_yrs2reburn, na.rm = TRUE),
+  #set NAs to time since last fire
+         time2manage = coalesce(time2manage, time_betwe)) %>% 
+  #lump wildfire codes
   mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
-  ecoregion = as.factor(ecoregion),
-  )
+  ecoregion = as.factor(ecoregion)) %>% 
+  
+  #set point id to row names and remove fire years
+  column_to_rownames(., 'pointid') %>%
+  
+  #remove unnecessary columns
+  dplyr::select(-c(LC20_Elev_, geom, grid_code, mostrecent, secondrece, max_yr_mechanical, max_yr_pfire, pfire_yrs2reburn, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn)) 
+
+```
+# Explore correlations between variables
+```{r}
+
 
 
 ```
-
 
 # Random forests analysis
 
 Partition data to test and train sets
 ```{r}
-datarf = data %>%
-    #assign new response var for random forsets - high vs. low/mod reburn severity
-    mutate(cbi_reburn_class = cbi_reburn,
-      cbi_reburn_class = case_when(cbi_reburn <2.5 ~ 'low-mod',
-                           TRUE ~ 'high'),
-    cbi_reburn_class = as.factor(cbi_reburn_class)) %>%
-  select(-c(cbi_reburn, max_yr_mechanical, max_yr_pfire))
+# datarf = data %>%
+#     #assign new response var for random forsets - high vs. low/mod reburn severity
+#     mutate(cbi_reburn_class = cbi_reburn,
+#       cbi_reburn_class = case_when(cbi_reburn <2.5 ~ 'low-mod',
+#                            TRUE ~ 'high'),
+#     cbi_reburn_class = as.factor(cbi_reburn_class)) %>%
+#   select(-c(cbi_reburn))
   
 set.seed(222)
-ind <- sample(2, nrow(data), replace = TRUE, prob = c(0.7, 0.3))
-train <- data[ind==1,]
-test <- data[ind==2,]
+ind <- sample(2, nrow(data_clean), replace = TRUE, prob = c(0.7, 0.3))
+train <- data_clean[ind==1,]
+test <- data_clean[ind==2,]
 
-
+train %>% 
+  ggplot(aes(cbi_reburn)) +
+  geom_density(fill = "#ff6767", alpha = 0.5) +
+  theme_bw(13)
 ```
 
 RF settings
@@ -68,15 +88,30 @@ RF settings
 
 ### Random forest in R
 ```{r}
-rf <- ranger(cbi_reburn_class~., 
+rf <- ranger(cbi_reburn~., 
              data=train, 
              num.trees = 100,
              max.depth = 8,
-             probability=TRUE,
-             importance = 'impurity_corrected') #look into these importance options
+             importance = 'impurity') #look into these importance options
 
 rf
 ```
+#### How are the predictions compared to the observed data?
+```{r}
+library(rpart)
+
+pred_rf = predict(rf, test)$predictions
+rmse(test$cbi_reburn, pred_rf)
+
+test %>% 
+  mutate(predicted = predict(rf, test)$predictions) %>% 
+  ggplot(aes(predicted, cbi_reburn)) +
+  geom_point(colour = "#ff6767", alpha = 0.3) +
+  labs(title = "Predicted and observed") +  theme_bw(18)
+
+```
+
+
 
 ```{r}
 #relative importance
