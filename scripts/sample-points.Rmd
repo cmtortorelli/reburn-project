@@ -112,7 +112,7 @@ Extracted:
 > time between burns (time_between_burns_all.tif)
 > year of second most recent fire (secondrecent_fire_all.tif)
 > year of most recent fire (mostrecent_fire_all.tif)
->6 weather variables: fm100, fm1000, erc, th, vpd, ts
+>6 weather variables for reburn year compiled in ArcPro: fm100, fm1000, erc, th, vpd, ts
 
 ```{r}
 #get cbi data
@@ -151,26 +151,42 @@ tree3 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractP
 shrub = bind_rows(shrub1, shrub2, shrub3)
 tree = bind_rows(tree1, tree2, tree3)
 
-points_reburnyr = points %>% select(pointid, mostrecent)
+points_reburnyr = points %>% dplyr::select(pointid, mostrecent, secondrece)
 
-#keep veg data for year prior to reburn
+#keep shrub data for year prior to reburn
 shrubl = shrub %>% 
   pivot_longer(!pointid, names_to = "shrub_yr", values_to = "shrub_rebrn") %>%
   merge(points_reburnyr, ., all = TRUE) %>% 
   mutate(shrub_yr = substr(shrub_yr, 1, 4),
          subset_yr = mostrecent - 1) %>% 
   subset(shrub_yr == subset_yr) %>%
-  select(pointid, shrub_rebrn)
+  dplyr::select(pointid, shrub_rebrn)
 
+#keep tree data for year prior to reburn and year prior to initial burn
+
+#reburn year tree cover
 treel = tree %>% 
   pivot_longer(!pointid, names_to = "tree_yr", values_to = "tree_reburn") %>%
   merge(points_reburnyr, ., all = TRUE) %>% 
   mutate(tree_yr = substr(tree_yr, 1, 4),
          subset_yr = mostrecent - 1) %>% 
   subset(tree_yr == subset_yr) %>%
-  select(pointid, tree_reburn)
+  dplyr::select(pointid, tree_reburn)
 
-#select only NDVI from just before reburn 
+#initial year tree cover - NOT COMPLETE! *I only extracted tree cover for 2002-2021 from GEE*
+treeli = tree %>% 
+  pivot_longer(!pointid, names_to = "tree_yr", values_to = "tree_initial") %>%
+  merge(points_reburnyr, ., all = TRUE) %>% 
+  mutate(tree_yr = substr(tree_yr, 1, 4),
+         subset_yr = secondrece - 1) %>% 
+  subset(tree_yr == subset_yr) %>%
+  dplyr::select(pointid, tree_initial)
+
+#merge initial and reburn tree year data
+treel = full_join(data.frame(treel), data.frame(treeli))
+
+
+#select only NDVI from the year before reburn 
 
 #rename columns to align with correct years
 colnames(ndvi) <- c(2001, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2002, 2021, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, "pointid")
@@ -179,7 +195,7 @@ ndvil = ndvi %>% pivot_longer(!pointid, names_to = "ndvi_yr", values_to = "ndvi"
   full_join(points_reburnyr, .) %>%
   mutate(subset_yr = mostrecent - 1) %>%
   subset(ndvi_yr == subset_yr) %>%
-  select(pointid, ndvi)
+  dplyr::select(pointid, ndvi)
 
 
 
@@ -194,17 +210,17 @@ points_gee = full_join(points_gee, data.frame(treel))
 ```{r initial burn cbi}
 cbi = points_gee %>% 
   data.frame() %>%
-  select(pointid, secondrece, cbi_2021:cbi_1995) %>%
+  dplyr::select(pointid, secondrece, cbi_2021:cbi_1995) %>%
   pivot_longer(!c(pointid, secondrece), names_to = "cbi_yr", values_to = "cbi_initial") %>%
   mutate(cbi_yr = as.numeric(substr(cbi_yr, 5, 8))) %>%
   subset(cbi_yr == secondrece) %>%
-  select(pointid, cbi_initial)
+  dplyr::select(pointid, cbi_initial)
 
 points_gee = full_join(points_gee, data.frame(cbi))
 
-#remove uneccesary cols
+#remove unnecessary cols
 points_cleaned = points_gee %>%
-  select(-c(cbi_2021:cbi_1985))
+  dplyr::select(-c(cbi_2021:cbi_1985))
 ```
 
 ### Add in ecoregion data
@@ -220,20 +236,18 @@ points_cleaned = st_intersection(points_cleaned, eco)
 #### Extract cleaned FACTS management data to points & keep only relevant management
 ```{r extract FACTS to points}
 #read in facts
-facts <- st_read(datadir("raw-data/facts/compiled/facts_compiled_for_points_extract_west.gpkg"))
+facts <- st_read(datadir("raw-data/facts/compiled/facts_compiled_for_points_extract.gpkg"))
 
 facts = facts %>% st_transform(st_crs(points_cleaned)) %>%
-  mutate(activiy_yr = paste(ACTIVITY, year, sep = "_")) %>%
-  select(activity_yr, geom)
+  mutate(activity_yr = paste(NEW_ACTIVITY, year, sep = "_")) %>%
+  dplyr::select(activity_yr, geom)
 # plot(facts[1:5000,1])
 
-#select relevant cols for facts intersection 
-points_for_facts_int = points_cleaned %>% select(pointid, mostrecent, secondrece)  
 
 # Extract FACTS history at each plot 
-facts_int = st_intersection(points_for_facts_int, facts)
-# st_write(facts_int, datadir("prelim-outputs/points/points_buff_facts_int.gpkg"))
-# facts_int = st_read(datadir("prelim-outputs/points/points_buff_facts_int.gpkg"))
+facts_int = st_intersection(points_reburnyr, facts)
+st_write(facts_int, datadir("prelim-outputs/points/points_buff_facts_int-12-13-22.gpkg"))
+# facts_int = st_read(datadir("prelim-outputs/points/points_buff_facts_int-12-8-22.gpkg"))
 
 #Keep only management that occurs between burn years
 facts_keep = facts_int %>%
@@ -241,26 +255,47 @@ facts_keep = facts_int %>%
          facts_activ = as.factor(str_sub(activity_yr, 1, -6))) %>%
   filter(facts_yr > secondrece & facts_yr < mostrecent)
 
-#group so that each point has only one row for management 
+#select management that occurred before burn
+facts_preburn = facts_int %>%
+  mutate(facts_yr = as.numeric(str_sub(activity_yr,-4,-1)),
+         facts_activ = as.factor(str_sub(activity_yr, 1, -6))) %>%
+  filter(facts_yr < secondrece)
+
+#group so that each point has only one row for years to prescribed fire and mechanical treatment
 facts_group = facts_keep %>% data.frame() %>%  
-  select(-activity_yr) %>%
+  dplyr::select(-activity_yr) %>%
   group_by(pointid, facts_activ) %>%
   summarise(max_yr = max(facts_yr),
             count_trt = n()) %>%
-  left_join(., data.frame(points_for_facts_int)) %>% #add fire year cols
+  left_join(., data.frame(points_reburnyr)) %>% #add fire year cols
   pivot_wider(-geometry, names_from = facts_activ, values_from = c(max_yr,count_trt)) %>%
   #add columns for years between treatment and reburn
   mutate(mechanical_yrs2reburn = mostrecent - max_yr_mechanical, 
          pfire_yrs2reburn = mostrecent - max_yr_pfire,
          count_trt = sum(count_trt_mechanical, count_trt_pfire, na.rm = TRUE))
 
+#repeat for management before the initial fire
+facts_preburn = facts_preburn %>% data.frame() %>%  
+  dplyr::select(-activity_yr) %>%
+  group_by(pointid, facts_activ) %>%
+  summarise(max_yr_preburn = max(facts_yr),
+            count_trt_preburn = n()) %>%
+  left_join(., data.frame(points_reburnyr)) %>% #add fire year cols
+  pivot_wider(-geometry, names_from = facts_activ, values_from = c(max_yr_preburn,count_trt_preburn)) %>%
+  #add columns for years between treatment and reburn
+  mutate(mechanical_yrs2initial = secondrece - max_yr_preburn_mechanical, 
+         pfire_yrs2initial = secondrece - max_yr_preburn_pfire,
+         count_trt_preburn = sum(count_trt_preburn_mechanical, count_trt_preburn_pfire, na.rm = TRUE))
+
+
 #check for duplicates
 # summary(duplicated(facts_group$pointid))
 
 #join management info to points_cleaned
-points_cleaned_facts = left_join(points_cleaned, facts_group)
+points_cleaned_facts = left_join(points_cleaned, facts_group) #add in managment that occured between the initial and the reburn fires
+points_cleaned_facts = left_join(points_cleaned_facts, facts_preburn)#add in managemnet that occured before the initial fire
 
-# write.csv(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_facts.csv"))
+st_write(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_facts-12-13-22.gpkg"))
 ```
 
 
@@ -278,16 +313,18 @@ points_perims_int = st_intersection(points, perims)
 
 #get reburn fire id
 reburn_fire_id = points_perims_int %>% data.frame() %>%
-    full_join(points_for_facts_int, .) %>%
+    full_join(points_reburnyr, .) %>%
     filter(Fire_Year == mostrecent,
-           Fire_Year > 2001,) %>% #filtering out reburns that have no weather data and will be excluded from analysis
-  select(pointid, Fire_ID) %>% data.frame()
+           Fire_Year > 2001) %>% #filtering out reburns that have no weather data and will be excluded from analysis
+    mutate(reburn_fireID = Fire_ID) %>%
+  dplyr::select(pointid, mostrecent, Fire_ID, reburn_fireID) %>% data.frame()
 
 #get fire ID for second most recent burn
 initial_fire_id = points_perims_int %>% data.frame() %>%
-    full_join(points_for_facts_int, .) %>%
+    full_join(points_reburnyr, .) %>%
     filter(Fire_Year == secondrece) %>% 
-  select(pointid, Fire_ID, secondrece) %>% data.frame()
+  mutate(initial_fireID = Fire_ID) %>%
+  dplyr::select(pointid, secondrece, Fire_ID, initial_fireID) %>% data.frame()
 
 ### join information about fire id to point
 
@@ -295,12 +332,12 @@ initial_fire_id = points_perims_int %>% data.frame() %>%
 mtbs_ids = read.csv(datadir("raw-data/fire_id_tables/mtbs_id_table.csv")) %>%
   mutate(Fire_ID = Event_ID, 
          Fire_Type = as.factor(Incid_Type)) %>%
-  select(Fire_ID, Fire_Type) 
+  dplyr::select(Fire_ID, Fire_Type) 
 
 wfigs_ids = read.csv(datadir("raw-data/fire_id_tables/wfigs21_id_table.csv")) %>% 
     mutate(Fire_ID = irwin_UniqueFireIdentifier, 
          Fire_Type = as.factor(poly_FeatureCategory)) %>%
-  select(Fire_ID, Fire_Type) 
+  dplyr::select(Fire_ID, Fire_Type) 
 
 #combine into one fire id table
 fire_id_table = rbind(mtbs_ids, wfigs_ids)
@@ -308,11 +345,11 @@ fire_id_table = rbind(mtbs_ids, wfigs_ids)
 #join to fire peimeter points interesct dfs above
 reburn_fire_id = left_join(reburn_fire_id, fire_id_table) %>%
   mutate(reburn_fire_type = Fire_Type) %>%
-  select(pointid, reburn_fire_type)
+  dplyr::select(pointid, reburn_fire_type, reburn_fireID)
 
 initial_fire_id = left_join(initial_fire_id, fire_id_table) %>%
     mutate(initial_fire_type = Fire_Type) %>%
-  select(pointid, initial_fire_type)
+  dplyr::select(pointid, initial_fire_type, initial_fireID)
 
 fire_id = left_join(reburn_fire_id, initial_fire_id)
 
@@ -324,19 +361,14 @@ points_cleaned_facts_perims = left_join(points_cleaned_facts, fire_id)
 
 
 #write intersected sample points
-# st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
+st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims-12-13-22.gpkg"))
 # write.csv(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.csv"))
-
+# 
 # points_cleaned_facts_perims = st_read(datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
 ```
 
-# Select points for analysis based on following criteria:
 
-- Not on FS land (focus analysis on forested FS land, and for management)
-- Less than 25% tree cover at time of reburn (focus analysis on forested areas)
-- second fire occurred before 2002 (limited by MODIS for day of fire weather)
-- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimeter)
-
+#remove points that fall outside of FS land
 
 ```{r remove points based on criteria}
 #load ca fs land spatial data
@@ -349,18 +381,9 @@ points_fs = st_intersects(points_cleaned_facts_perims, fs)
 points_fs_include = lengths(points_fs) > 0 
 points_fs_include = points_cleaned_facts_perims[points_fs_include,]
 
-#remove points that... 
-points_crit = points_fs_include %>% 
-  filter(tree_reburn >= 25 & #have greater than 25% tree cover at time of reburn
-           mostrecent > 2001 & #second fire occured after 2001 (for MODIS weather data)
-           cbi_initial > 0.5 & #burned at >0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error
-           cni85_21 > 0.5) %>%
-  filter(!is.na(ecoregion)) #remove points that fall outside of our 4 ecoregions
-
 #write data for analysis
-st_write(points_crit, datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
-write_csv(points_crit, datadir("prelim-outputs/points/points_for_analysis_11-30-22.csv"))  
+st_write(points_fs_include, datadir("prelim-outputs/points/points_for_analysis_12-13-22.gpkg"))
 
-points_crit = st_read(datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
+
 ```
 

@@ -19,6 +19,8 @@ library(pdp)# for partial dependence plots (PDPs)
 
 library(tidyverse)
 library(here)
+library(sp)
+library(sf)
 
 data_dir = readLines(here("data_dir.txt"), n=1)
 source(here("scripts/convenience_functions.R"))
@@ -28,39 +30,115 @@ source(here("scripts/convenience_functions.R"))
 Load reburn points for analysis
 
 ```{r}
-data = st_read(datadir("prelim-outputs/points/points_for_analysis_11-30-22.gpkg"))  
+data = st_read(datadir("prelim-outputs/points/points_for_analysis_12-13-22.gpkg"))  
+```
 
+### Prep data for spatial partioning into test and training datasets
+
+Assign each point to spatial sampling zone 12km
+```{r}
+library(terra)
+library(raster)
+library(sp)
+#create grid and assign grid values to each point
+extent(data)
+# plot(extent)
+e = ext(c(-2280909, -626619.3, 1007070, 3117660)) #xmin, xmax, ymin, ymax extent of data
+p = as.polygons(e) #covert to polygons
+crs(p) = crs(data) #set crs
+
+r = rast(p) #convert raster
+
+zones = rast(p, resolution = c(12000, 12000))
+values(zones) = 1:ncell(zones)
+
+# plot(zones)
+
+#extract zone value to points
+data$sample_zones = extract(zones, data, ID=FALSE)
+
+data = data %>% mutate(sample_zones = sample_zones$lyr.1) #get rid of ID var in sample zones 
+```
+
+# Select points for analysis based on following criteria:
+
+- Not on FS land (focus analysis on forested FS land, and for management)
+- Less than 25% tree cover at time of reburn (focus analysis on forested areas)
+- second fire occurred before 2002 (limited by MODIS for day of fire weather)
+- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimeter)
+
+```{r}
+
+#remove points that... 
+data_sub = data %>% 
+  filter(tree_reburn >= 25 & #have greater than 25% tree cover at time of reburn
+           mostrecent > 2001 & #second fire occurred after 2001 (for MODIS weather data)
+           cbi_initial > 0.5 & #burned at >0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error
+           cni85_21 > 0.5) %>%
+  filter(!is.na(ecoregion)) #remove points that fall outside of our 4 ecoregions
+
+```
+
+
+```{r}
 #clean data
-data_clean = data %>% 
+data_sub2 = data_sub %>% 
   rename(cbi_reburn = cni85_21) %>% data.frame() %>%
   #remove rows where ndvi = NA (29 rows) 
   drop_na(ndvi) %>%
-  #lump facts management into one variable (time since management)
-  mutate(time2manage = pmin(pfire_yrs2reburn, mechanical_yrs2reburn, na.rm = TRUE),
-  #set NAs to time since last fire
-         time2manage = coalesce(time2manage, time_betwe)) %>% 
+ 
   #lump wildfire codes
   mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   ecoregion = as.factor(ecoregion)) %>% 
   
-  #set point id to row names and remove fire years
-  column_to_rownames(., 'pointid') %>%
+  #remove 8 points with no weather data 
+  filter(fm100_02_2 >0 & th_02_21 > 0 & vpd_02_21 > 0 &  fm1000_02_ > 0 & vs_02_21 > 0 &  erc_02_21 > 0) %>%
   
-  #remove unnecessary columns
-  dplyr::select(-c(LC20_Elev_, geom, grid_code, mostrecent, secondrece, max_yr_mechanical, max_yr_pfire, pfire_yrs2reburn, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn)) 
+  #remove 122 points without AET data
+  filter(AET > 0) %>%
+  
+  #set point id to row names 
+  column_to_rownames(., 'pointid')
 
+
+#clean up facts management data
+data_facts = data_sub2 %>%
+    #lump facts management into one variable (time since management)
+  mutate(time2manage1 = pmin(pfire_yrs2reburn, mechanical_yrs2reburn, na.rm = TRUE),
+  #set NAs to time since last fire
+        time2manage = coalesce(time2manage1, time_betwe),
+  #add logical variable for if a point was managed within 10 years of the reburn
+        postmanage10 = time2manage1 <= 10,
+        postmanage10 = coalesce(postmanage10, FALSE),
+    #add logical variable for if a point was managed within 10 years of the initial fire
+        time2manage_preburn = pmin(pfire_yrs2initial, mechanical_yrs2initial, na.rm = TRUE),
+        premanage10 = time2manage_preburn <= 10,
+        premanage10 = coalesce(premanage10, FALSE)) #set NBAs to FALSE
+  
+#remove unnecessary columns
+data_clean = data_facts %>%
+  dplyr::select(-c(LC20_Elev_, geom, grid_code, mostrecent, secondrece, max_yr_mechanical, max_yr_preburn_mechanical, max_yr_pfire, max_yr_preburn_pfire, pfire_yrs2reburn, pfire_yrs2initial, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn, mechanical_yrs2initial, count_trt_preburn, time2manage1, time2manage_preburn)) 
+
+
+data_low = data_clean %>%
+  filter(cbi_initial < 1.5)
+
+data_mod = data_clean %>%
+  filter(cbi_initial >= 1.5 & cbi_initial < 2.5)
+
+data_high = data_clean %>% 
+  filter(cbi_initial >= 2.5)
+
+data_lowmod = data_clean %>%
+  filter(cbi_initial < 2.5)
 ```
-# Explore correlations between variables
-```{r}
 
 
+#### Explore correlations between variables
 
-```
 
-# Random forests analysis
-
-Partition data to test and train sets
+Partition data to test and train sets for faster processing and testing later
 ```{r}
 # datarf = data %>%
 #     #assign new response var for random forsets - high vs. low/mod reburn severity
@@ -71,66 +149,312 @@ Partition data to test and train sets
 #   select(-c(cbi_reburn))
   
 set.seed(222)
-ind <- sample(2, nrow(data_clean), replace = TRUE, prob = c(0.7, 0.3))
-train <- data_clean[ind==1,]
-test <- data_clean[ind==2,]
+ind <- sample(2, nrow(data_lowmod), replace = TRUE, prob = c(0.7, 0.3))
+train <- data_lowmod[ind==1,]
+test <- data_lowmod[ind==2,]
 
 train %>% 
   ggplot(aes(cbi_reburn)) +
   geom_density(fill = "#ff6767", alpha = 0.5) +
   theme_bw(13)
-```
-
-RF settings
->important to tune the parameters - #trees and max.depth
->look into importance settings
-> RF with raw cbi instead of groups
-
-### Random forest in R
-```{r}
-rf <- ranger(cbi_reburn~., 
-             data=train, 
-             num.trees = 100,
-             max.depth = 8,
-             importance = 'impurity') #look into these importance options
-
-rf
-```
-#### How are the predictions compared to the observed data?
-```{r}
-library(rpart)
-
-pred_rf = predict(rf, test)$predictions
-rmse(test$cbi_reburn, pred_rf)
-
-test %>% 
-  mutate(predicted = predict(rf, test)$predictions) %>% 
-  ggplot(aes(predicted, cbi_reburn)) +
-  geom_point(colour = "#ff6767", alpha = 0.3) +
-  labs(title = "Predicted and observed") +  theme_bw(18)
 
 ```
 
 
-
 ```{r}
-#relative importance
-sort(importance(rf))
+library(purrr)
 
-# Prediction wrapper that returns average prediction for each class
-pfun <- function(object, newdata) {
-  colMeans(predict(object, data = newdata)$predictions)
+#keep only numeric variables
+data_num = data_lowmod %>%
+  keep(is.numeric)
+
+library(PerformanceAnalytics)
+cor(data_num, method = "pearson", use = "complete.obs")
+chart.Correlation(cor(data_num))
+
+weather = test %>% dplyr::select(erc_02_21, vs_02_21, th_02_21, fm1000_02_, fm100_02_2, vpd_02_21, cbi_reburn, cbi_initial)
+
+clim_topo = test %>% dplyr::select(heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, TPI_1024, cbi_reburn, cbi_initial, time_betwe)
+
+firehist = test %>% dplyr::select(time_betwe, postmanage10, premanage10, count_burn, cbi_reburn, cbi_initial)
+```
+
+Plot relationships
+```{r}
+library(GGally)
+# ggpairs(weather, ggplot2::aes(colour=ecoregion))
+ggpairs(weather)
+ggpairs(clim_topo)
+ggpairs(firehist)
+```
+
+
+
+#### Explore indiviual variable relationships with cbi reburn
+```{r}
+
+data_lowmod %>%
+  dplyr::select(-c(reburn_fire_type, initial_fire_type, initial_fireID, reburn_fireID, postmanage10, premanage10)) %>%
+  pivot_longer(!c(cbi_reburn, ecoregion), names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
+  ggplot(aes(x = value, y = cbi_reburn, color = ecoregion)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_smooth(formula = y ~ s(x, bs = "cs", k = 3)) +
+  theme_bw(13)
+
+
+
+# data_lowmod %>%
+#   ggplot(aes(x = shrub_rebrn, y = ndvi, color = ecoregion)) +
+#   geom_smooth(formula = y ~ s(x, bs = "cs", k = 4)) +
+#   theme_bw(13)
+# 
+# data_lowmod %>%
+#   ggplot(aes(x = tree_reburn, y = ndvi, color = ecoregion)) +
+#   geom_smooth(formula = y ~ s(x, bs = "cs", k = 4)) +
+#   theme_bw(13)
+  
+```
+
+
+#### Logistic tranform "reburn cbi" response variable because its bounded 0.5-3
+```{r}
+#functions to normalize and logit transform response var
+normalize <- function(x) {
+return ((x - 0.5) / (3.01 - 0.5)) #severity range = 0.5-3 (a few observations have severity = 3 so setting upper bound to 3.01)
 }
 
-# Partial dependence of probability for each class on petal width
-p <- partial(rf, pred.var = "time_betwe", pred.fun = pfun)
+logit <- function(x) {
+  return(
+    log(x/(1-x))
+  )
+}
 
-ggplot(p, aes(time_betwe, yhat, color = yhat.id)) +
-  geom_line() +
-  theme(legend.title = element_blank())
 ```
 
-GAMs
+
+model relationships with transformed response variable
+```{r}
+
+#scale reburn CBI from 0-1
+test$cbi_reburn_scale = normalize(test$cbi_reburn) 
+
+
+
+# plot logit models
+test %>%
+  dplyr::select(-c(reburn_fire_type, initial_fire_type, initial_fireID, reburn_fireID, count_trt_preburn_mechanical, count_trt_preburn_pfire, cbi_reburn, LC16_BPS_2)) %>%
+  pivot_longer(!c(cbi_reburn_scale, ecoregion), names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
+  ggplot(aes(x = value, y = logit(cbi_reburn_scale), color = ecoregion)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_point(alpha = 0.1)+
+    geom_smooth(formula = y ~ s(x, bs = "cs")) +
+  theme_bw(13)
+
+data_lowmod %>%
+  dplyr::select(-c(reburn_fire_type, initial_fire_type, initial_fireID, reburn_fireID, count_trt_preburn_mechanical, count_trt_preburn_pfire, cbi_reburn, LC16_BPS_2, postmanage10, premanage10)) %>%
+  pivot_longer(!c(cbi_reburn_scale, ecoregion), names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
+  ggplot(aes(x = value, y = logit(cbi_reburn_scale), color = ecoregion)) +
+  facet_wrap(~ key, scales = "free") +
+    geom_smooth(formula = y ~ s(x, bs = "cs", k = 3)) +
+  theme_bw(13)
+```
+
+
+## Sparse modeling with LASSO
+```{r}
+library(glmnet)
+
+#scale numeric predictor variables for LASSO
+data_lowmod_logit = data_lowmod %>% 
+  mutate(cbi_reburn_logit = logit(normalize(cbi_reburn))) %>%
+  # mutate(across(heat_load:cbi_initial, base::scale)) %>%
+  data.frame()
+
+data_lowmod_scale = scale(data_lowmod_logit[,1:21], scale = TRUE, center = TRUE)
+data_lowmod_scale = cbind(data_lowmod_scale, data_lowmod_logit[,22:33])
+
+#create model matrix
+mm = model.matrix(~ cbi_initial*ecoregion + I(cbi_initial^2)*ecoregion +
+                    erc_02_21*ecoregion + I(erc_02_21^2)*ecoregion + fm100_02_2*ecoregion + I(fm100_02_2^2)*ecoregion + fm1000_02_*ecoregion + I(fm1000_02_^2)*ecoregion + th_02_21*ecoregion + I(th_02_21^2)*ecoregion + vpd_02_21*ecoregion + I(vpd_02_21^2)*ecoregion + vs_02_21*ecoregion + I(vs_02_21^2)*ecoregion + 
+                    heat_load*ecoregion + I(heat_load^2)*ecoregion + TPI_1024*ecoregion + I(TPI_1024^2)*ecoregion + 
+                    AET*ecoregion + I(AET^2)*ecoregion + PRISM_ppt_*ecoregion + I(PRISM_ppt_^2)*ecoregion + PRISM_tmea*ecoregion + I(PRISM_tmea^2)*ecoregion + PRISM_vpdm*ecoregion + I(PRISM_vpdm^2)*ecoregion + 
+                    count_burn*ecoregion + time_betwe*ecoregion + I(time_betwe^2)*ecoregion + count_burn*ecoregion + time_betwe*ecoregion + I(time_betwe^2)*ecoregion + 
+                    ndvi*ecoregion + I(ndvi^2)*ecoregion + shrub_rebrn*ecoregion + I(shrub_rebrn^2)*ecoregion + tree_reburn*ecoregion + I(tree_reburn^2)*ecoregion + 
+                    postmanage10*ecoregion + premanage10*ecoregion + 
+                    ecoregion +
+                    AET*time_betwe + I(AET^2)*I(time_betwe^2) + I(AET^2)*time_betwe + AET*I(time_betwe^2) + 
+         PRISM_ppt_*time_betwe + I(PRISM_ppt_^2)*I(time_betwe^2) + I(PRISM_ppt_^2)*time_betwe + PRISM_ppt_*I(time_betwe^2) +
+          PRISM_tmea*time_betwe + I(PRISM_tmea^2)*I(time_betwe^2) + I(PRISM_tmea^2)*time_betwe + PRISM_tmea*I(time_betwe^2) +
+           PRISM_vpdm*time_betwe + I(PRISM_vpdm^2)*I(time_betwe^2) + I(PRISM_vpdm^2)*time_betwe + PRISM_vpdm*I(time_betwe^2), data = data_lowmod_scale)
+
+#fit LASSO
+fit = glmnet(mm, df$cbi_reburn, alpha = 0.5) #minimize sum of squares under condition that sum of absolute values of coef needs to be under some value #how to keep some vars out of LASSO? Add variables in after? 
+#alpha = 0.5 half penalty comes from ridge regression and half comes from lasso. 
+
+#plot fit
+plot(fit, label = TRUE) #L1 norm = sum of absolute values of coefficients 
+
+
+
+
+#cross validate
+cvfit <- cv.glmnet(mm_ca, data_lowmod_scale$cbi_reburn, )
+plot(cvfit)
+
+# print(fit$beta)
+print(cvfit$lambda.1se)
+
+fit1se = glmnet(mm_ca, data_lowmod_ca$cbi_reburn, lambda = cvfit$lambda.1se) #minimize sum of squares under condition that sum of absolute values of coef needs to be under some value #how to keep some vars out of LASSO? Add variables in after? 
+
+```
+
+### Fit separate models for each ecoregion
+
+```{r}
+#fit separate models by ecoregion
+data_lowmod_ca = data_lowmod_scale %>% filter(ecoregion == "California Coast")
+data_lowmod_nm = data_lowmod_scale %>% filter(ecoregion == "Northern Mountains")
+data_lowmod_sw = data_lowmod_scale %>% filter(ecoregion == "Southwest")
+data_lowmod_wm = data_lowmod_scale %>% filter(ecoregion == "Western Mountains")
+
+
+#function to fit sparse models and choose model with lambda = 1 se
+
+sparsemodel = function(df){
+  
+  #define model matrix - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  mm = model.matrix(~ cbi_initial + I(cbi_initial^2) +
+                    erc_02_21 + I(erc_02_21^2) + + th_02_21 + I(th_02_21^2) + vpd_02_21 + I(vpd_02_21^2) + vs_02_21 + I(vs_02_21^2) + 
+                    heat_load + I(heat_load^2) + TPI_1024 + I(TPI_1024^2) + 
+                    AET + I(AET^2) + PRISM_ppt_ + I(PRISM_ppt_^2) + PRISM_tmea + I(PRISM_tmea^2) + PRISM_vpdm + I(PRISM_vpdm^2) + 
+                    count_burn + time_betwe + I(time_betwe^2) + count_burn + time_betwe + I(time_betwe^2) 
+                    + tree_reburn + I(tree_reburn^2) + 
+              
+                    AET*time_betwe + I(AET^2)*I(time_betwe^2) + I(AET^2)*time_betwe + AET*I(time_betwe^2) + 
+         PRISM_ppt_*time_betwe + I(PRISM_ppt_^2)*I(time_betwe^2) + I(PRISM_ppt_^2)*time_betwe + PRISM_ppt_*I(time_betwe^2) +
+          PRISM_tmea*time_betwe + I(PRISM_tmea^2)*I(time_betwe^2) + I(PRISM_tmea^2)*time_betwe + PRISM_tmea*I(time_betwe^2) +
+           PRISM_vpdm*time_betwe + I(PRISM_vpdm^2)*I(time_betwe^2) + I(PRISM_vpdm^2)*time_betwe + PRISM_vpdm*I(time_betwe^2), 
+         data = df)
+  
+  #fit LASSO
+  fit = glmnet(mm, df$cbi_reburn_logit, alpha = 1) #minimize sum of squares under condition that sum of absolute values of coef needs to be under some value #how to keep some vars out of LASSO? Add variables in after? 
+  #alpha=1 is the lasso penalty, and alpha=0 the ridge penalty.
+  
+  #cross validate
+  cvfit <- cv.glmnet(mm, df$cbi_reburn_logit)
+  
+  #fit with lambda 1 se
+  fit1se = glmnet(mm, df$cbi_reburn_logit, lambda = cvfit$lambda.1se)
+  fit2se = glmnet(mm, df$cbi_reburn_logit, lambda = cvfit$lambda.1se*2)
+  fit3se = glmnet(mm, df$cbi_reburn_logit, lambda = cvfit$lambda.1se*3)
+
+  output_list = list("fit" = fit, "cvfit" = cvfit, "fit1se" = fit1se$beta, "fit2se" = fit2se$beta, "fit3se" = fit3se$beta)
+  # return(output_list)
+
+}
+
+fit_ca = sparsemodel(data_lowmod_ca)
+fit_nm = sparsemodel(data_lowmod_nm)
+fit_sw = sparsemodel(data_lowmod_sw)
+fit_wm = sparsemodel(data_lowmod_wm)
+
+plot(fit_ca$cvfit)
+fit_ca$fit2se
+# fit_ca$fit1se
+
+fit_ca = as.data.frame(as.matrix(fit_ca$fit3se)) %>% rownames_to_column("var")
+fit_nm = as.data.frame(as.matrix(fit_nm$fit3se))
+fit_sw = as.data.frame(as.matrix(fit_sw$fit3se))
+fit_wm = as.data.frame(as.matrix(fit_wm$fit3se))
+
+fit_mods = bind_cols(fit_ca, fit_nm, fit_sw, fit_wm)
+colnames(fit_mods) = c("var", "fit_ca", "fit_nm", "fit_sw", "fit_wm")
+
+fit_mods = fit_mods %>% pivot_longer(fit_ca:fit_wm, names_to = "eco", values_to = "estimates")
+
+ggplot(fit_mods,
+       aes(x = estimates, y = var, color = eco)) +
+  geom_point(stat = "identity", size = 2) +
+  theme_bw(13)
+```
+
+
+Fit LASSO with GAMs
+```{r}
+# library(plsmselect)
+library(gamsel) # https://arxiv.org/abs/1506.03850
+# https://www.r-bloggers.com/2019/11/an-unofficial-vignette-for-the-gamsel-package/
+
+
+#lump variables by category
+climate = c('AET', 'PRISM_ppt_', 'PRISM_ppt_', 'PRISM_tmea', 'PRISM_vpdm')
+fire_hist = c('cbi_initial', 'time_betwe') 
+weather = c('erc_02_21', 'fm100_02_2', 'fm1000_02_', 'th_02_21', 'vpd_02_21', 'vs_02_21') #remove fm100 if keeping erc because they are highly correlated >.9
+topo = c('heat_load', 'TPI_1024')
+fuels = c('ndvi', 'shrub_rebrn', 'tree_reburn')
+manage = c('postmanage10', 'premanage10') #remove rows with postmanage from dataset for initial full analysis
+eco = 'ecoregion'
+
+#vars to include in gams
+vars = c(climate, fire_hist, weather, topo, fuels)
+#create matrix for gams with relevant variables
+x = data_lowmod_scale %>% dplyr::select(any_of(vars)) %>% as.matrix()
+y = data_lowmod_scale$cbi_reburn_logit
+#define interactions
+# ints = c(AET*time_betwe, PRISM_ppt_*time_betwe, PRISM_vpdm*time_betwe)
+
+```
+
+fit gamsel
+```{r}
+#fit gamsel
+fit <- gamsel(x, y) 
+
+#tuning gamsel: 
+#gamsel has a tuning parameter gamma which is between 0 and 1. Smaller values of gamma penalize the linear components less than the non-linear components, resulting in more linear components for the fitted model. The default value is gamma = 0.4.
+
+# By default, each variable is given m_j = 10 basis functions. This can be modified with the degrees option, and this value can differ from variable to variable (to allow for this, pass a vector of length equal to the number of variables to the degrees option).
+# 
+# By default, the maximum degrees of freedom for each variable is 5. This can be modified with the dfs option, with larger values allowing more “wiggly” fits. Again, this value can differ from variable to variable.
+
+fit #Printing the returned gamsel object tells us how many features, linear components and non-linear components were included in the model for each lambda value respectively. It also shows the fraction of null deviance explained by the model and the lambda value for that model.
+
+
+summary(fit)
+#plot fits - By default, plot() gives the fitted functions for the last value of the lambda key in fit, and gives plots for all the features.  The user can specify the index of the lambda value to show using the index option:
+
+par(mfrow = c(2, 5))
+# par(mar = c(4, 2, 2, 2))
+plot(fit, x, index = 32, which = 5:15)
+
+
+# Predictions
+# 
+# Predictions from this model can be obtained by using the predict method of the gamsel() function output: each column gives the predictions for a value of lambda.
+```
+
+
+
+
+# gfit = gamlasso(response = "cbi_reburn_logit",
+#                 linear.terms = 'count_burn',
+#                 smooth.terms = c(climate, fire_hist, weather, topo, fuels),
+#                 data = data_lowmod_scale,
+#                 linear.penalty = "l1",
+#                 smooth.penalty = "l1",
+#                 num.knots = 3,
+#                 seed = 1)
+
+
+
+>logistic model to account for bounded response cbi reburn?
+> decide what to do with correlated variables? change alpha to include more correlated variables or choose some based on prior knowledge
+> weird relationships with management (Separate analysis?)
+
+
+
+
+## GAMs
 
 Variable selection for GAMs - 
 > based on prediction rather than sig.
@@ -195,4 +519,59 @@ use GAMs to assess predictive performance with and without predictors
 
 
 
+
+-------------------
+
+## Random forests analysis
+
+
+
+RF settings
+>important to tune the parameters - #trees and max.depth
+>look into importance settings
+> RF with raw cbi instead of groups
+
+### Random forest in R
+```{r}
+rf <- ranger(cbi_reburn~., 
+             data=train, 
+             num.trees = 100,
+             max.depth = 8,
+             importance = 'impurity') #look into these importance options
+
+rf
+```
+#### How are the predictions compared to the observed data?
+```{r}
+library(Metrics)
+
+pred_rf = predict(rf, test)$predictions
+rmse(test$cbi_reburn, pred_rf)
+
+test %>% 
+  mutate(predicted = predict(rf, test)$predictions) %>% 
+  ggplot(aes(predicted, cbi_reburn)) +
+  geom_point(colour = "#ff6767", alpha = 0.3) +
+  labs(title = "Predicted and observed") +  theme_bw(18)
+
+```
+
+
+
+```{r}
+#relative importance
+sort(importance(rf))
+
+# Prediction wrapper that returns average prediction for each class
+pfun <- function(object, newdata) {
+  colMeans(predict(object, data = newdata)$predictions)
+}
+
+# Partial dependence of probability for each class on cbi reburn
+p <- partial(rf, pred.var = c("time_betwe", "AET"), pred.fun = pfun)
+
+ggplot(p, aes(time_betwe, yhat, color = yhat.id)) +
+  geom_line() +
+  theme(legend.title = element_blank())
+```
 
