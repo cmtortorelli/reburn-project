@@ -21,6 +21,9 @@ library(tidyverse)
 library(here)
 library(sp)
 library(sf)
+library(terra)
+library(raster)
+
 
 data_dir = readLines(here("data_dir.txt"), n=1)
 source(here("scripts/convenience_functions.R"))
@@ -33,13 +36,27 @@ Load reburn points for analysis
 data = st_read(datadir("prelim-outputs/points/points_for_analysis_12-13-22.gpkg"))  
 ```
 
-### Prep data for spatial partioning into test and training datasets
+### Prep data for spatial partioning into test and training datasets 
+> backwards selection
+> mumin
+> RF for important predictors, spatial zone splitting? 
 
 Assign each point to spatial sampling zone 12km
 ```{r}
-library(terra)
-library(raster)
-library(sp)
+
+#explore spatial autocorrelation; semivariance of data
+library(gstat)
+
+# v = variogram(cni85_21~1, data=data)
+# plot(v)
+# vm <- vgm(psill=0.3, model="Gau", nugget=0.01, range=1000)
+# plot(v, model = vm)
+# 
+# fittedm = fit.variogram(v, model=vm) 
+```
+
+
+```{r}
 #create grid and assign grid values to each point
 extent(data)
 # plot(extent)
@@ -58,6 +75,7 @@ values(zones) = 1:ncell(zones)
 data$sample_zones = extract(zones, data, ID=FALSE)
 
 data = data %>% mutate(sample_zones = sample_zones$lyr.1) #get rid of ID var in sample zones 
+
 ```
 
 # Select points for analysis based on following criteria:
@@ -120,47 +138,84 @@ data_facts = data_sub2 %>%
 data_clean = data_facts %>%
   dplyr::select(-c(LC20_Elev_, geom, grid_code, mostrecent, secondrece, max_yr_mechanical, max_yr_preburn_mechanical, max_yr_pfire, max_yr_preburn_pfire, pfire_yrs2reburn, pfire_yrs2initial, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn, mechanical_yrs2initial, count_trt_preburn, time2manage1, time2manage_preburn)) 
 
+#remove rows that were managed between initial and reburn (save these for a separate analyis)
+data_nomanage = data_clean %>% filter(postmanage10 == FALSE)
 
-data_low = data_clean %>%
+#break into low, moderate, and high initial fire categories
+data_low = data_nomanage %>%
   filter(cbi_initial < 1.5)
 
-data_mod = data_clean %>%
+data_mod = data_nomanage %>%
   filter(cbi_initial >= 1.5 & cbi_initial < 2.5)
 
-data_high = data_clean %>% 
+data_high = data_nomanage %>% 
   filter(cbi_initial >= 2.5)
 
-data_lowmod = data_clean %>%
+data_lowmod = data_nomanage %>%
   filter(cbi_initial < 2.5)
 ```
 
 
-#### Explore correlations between variables
+### Split data into train and test
 
 
-Partition data to test and train sets for faster processing and testing later
+Partition data to test and train sets stratified by sample zones 
 ```{r}
-# datarf = data %>%
-#     #assign new response var for random forsets - high vs. low/mod reburn severity
-#     mutate(cbi_reburn_class = cbi_reburn,
-#       cbi_reburn_class = case_when(cbi_reburn <2.5 ~ 'low-mod',
-#                            TRUE ~ 'high'),
-#     cbi_reburn_class = as.factor(cbi_reburn_class)) %>%
-#   select(-c(cbi_reburn))
-  
-set.seed(222)
-ind <- sample(2, nrow(data_lowmod), replace = TRUE, prob = c(0.7, 0.3))
-train <- data_lowmod[ind==1,]
-test <- data_lowmod[ind==2,]
+library(splitTools) #https://cran.r-project.org/web/packages/splitTools/vignettes/splitTools.html
+library(ranger)
 
-train %>% 
-  ggplot(aes(cbi_reburn)) +
-  geom_density(fill = "#ff6767", alpha = 0.5) +
-  theme_bw(13)
+set.seed(222)
+
+# Split into training and test stratified by sample zones
+
+inds = partition(data_lowmod$sample_zones, p = c(train = 0.7, test = 0.3))
+str(inds)
+
+train <- data_lowmod[inds$train, ]
+test <- data_lowmod[inds$test, ]
+
+# Get stratified cross-validation in-sample indices
+folds <- create_folds(train$sample_zones, k = 5)
+
+
+```
+
+Repeated cross-validation
+
+
+If feasible, repeated cross-validation is recommended in order to reduce uncertainty in decisions. The process is the same as above. Instead of getting five performance values per fold, we get five times the number of repetitions (here, three).
+```{r}
+# # We start by making repeated, stratified cross-validation folds
+# folds <- create_folds(train$Sepal.Length, k = 5, m_rep = 3)
+# length(folds)
+# 
+# 
+# for (i in seq_along(valid_mtry)) {
+#   cv_mtry <- numeric()
+#   for (fold in folds) {
+#     fit <- ranger(Sepal.Length ~ ., data = train[fold, ], mtry = i)
+#     cv_mtry <- c(cv_mtry, 
+#                  rmse(train[-fold, "Sepal.Length"], predict(fit, train[-fold, ])$predictions))
+#   }
+#   valid_mtry[i] <- mean(cv_mtry)
+# }
+# 
+# # Result of cross-validation
+# valid_mtry
+# 
+# (best_mtry <- which.min(valid_mtry))
+# 
+# 
+# # Use optimal mtry to make model
+# final_fit <- ranger(Sepal.Length ~ ., data = train, mtry = best_mtry)
+# rmse(test$Sepal.Length, predict(final_fit, test)$predictions)
+
 
 ```
 
 
+
+### Explore correlations between variables
 ```{r}
 library(purrr)
 
@@ -168,9 +223,9 @@ library(purrr)
 data_num = data_lowmod %>%
   keep(is.numeric)
 
-library(PerformanceAnalytics)
-cor(data_num, method = "pearson", use = "complete.obs")
-chart.Correlation(cor(data_num))
+# library(PerformanceAnalytics)
+# cor(data_num, method = "pearson", use = "complete.obs")
+# chart.Correlation(cor(data_num))
 
 weather = test %>% dplyr::select(erc_02_21, vs_02_21, th_02_21, fm1000_02_, fm100_02_2, vpd_02_21, cbi_reburn, cbi_initial)
 
@@ -216,7 +271,7 @@ data_lowmod %>%
 ```
 
 
-#### Logistic tranform "reburn cbi" response variable because its bounded 0.5-3
+#### Logistic tranform "reburn cbi" response variable because its bounded 0.5-3 *not sure if we need to do this if using GAMs?
 ```{r}
 #functions to normalize and logit transform response var
 normalize <- function(x) {
@@ -232,7 +287,7 @@ logit <- function(x) {
 ```
 
 
-model relationships with transformed response variable
+model relationships with transformed response variable - CBI
 ```{r}
 
 #scale reburn CBI from 0-1
@@ -250,7 +305,7 @@ test %>%
     geom_smooth(formula = y ~ s(x, bs = "cs")) +
   theme_bw(13)
 
-data_lowmod %>%
+test %>%
   dplyr::select(-c(reburn_fire_type, initial_fire_type, initial_fireID, reburn_fireID, count_trt_preburn_mechanical, count_trt_preburn_pfire, cbi_reburn, LC16_BPS_2, postmanage10, premanage10)) %>%
   pivot_longer(!c(cbi_reburn_scale, ecoregion), names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
   ggplot(aes(x = value, y = logit(cbi_reburn_scale), color = ecoregion)) +
@@ -259,6 +314,74 @@ data_lowmod %>%
   theme_bw(13)
 ```
 
+
+
+### Fit separate models for each ecoregion
+
+```{r}
+#create new dfs for each ecoregion
+data_lowmod_ca = data_lowmod %>% filter(ecoregion == "California Coast")
+data_lowmod_nm = data_lowmod %>% filter(ecoregion == "Northern Mountains")
+data_lowmod_sw = data_lowmod %>% filter(ecoregion == "Southwest")
+data_lowmod_wm = data_lowmod %>% filter(ecoregion == "Western Mountains")
+
+```
+
+Model fit/selection with mgcv 
+https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/gam.selection.html 
+
+```{r}
+library(mgcv)
+gm = function(df){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit tranformed response
+                  s(AET, k = 5, bs = "cs") +
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
+                  s(PRISM_tmea, k = 5, bs = "cs") +
+                  # s(PRISM_vpdm, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 5, bs = "cs") +
+                  s(time_betwe, k = 5, bs = "cs") +
+                  s(erc_02_21, k = 5, bs = "cs") +
+                  # s(th_02_21, k = 5, bs = "cs") +
+                  s(vpd_02_21, k = 5, bs = "cs") +
+                  s(vs_02_21, k = 5, bs = "cs") +
+                  s(heat_load, k = 5, bs = "cs") +
+                  s(TPI_1024, k = 5, bs = "cs") +
+                  # s(ndvi, k = 5, bs = "cs") +
+                  # s(tree_reburn, k = 5, bs = "cs") +
+                  s(time_betwe, by = AET, k = 5, bs = "cs") +
+                  s(time_betwe, by = PRISM_ppt_, k = 5, bs = "cs") +
+                  s(time_betwe, by = PRISM_tmea, k = 5, bs = "cs") +
+                  s(time_betwe, by = vpd_02_21, k = 5, bs = "cs") +
+                  s(time_betwe, by = vs_02_21, k = 5, bs = "cs") +
+                  s(time_betwe, by = erc_02_21, k = 5, bs = "cs"),
+                data = df,
+             select = T) 
+
+  return(gamfit)
+
+}
+
+fit_ca = summary(gm(data_lowmod_ca))
+fit_nm = summary(gm(data_lowmod_nm))
+fit_sw = summary(gm(data_lowmod_sw))
+fit_wm = summary(gm(data_lowmod_wm))
+
+```
+
+#### Plot predictions
+```{r}
+
+
+```
+
+
+-
+
+
+
+--------------------------------------------------------------------------------
 
 ## Sparse modeling with LASSO
 ```{r}
@@ -308,16 +431,8 @@ fit1se = glmnet(mm_ca, data_lowmod_ca$cbi_reburn, lambda = cvfit$lambda.1se) #mi
 
 ```
 
-### Fit separate models for each ecoregion
-
+fit separate lasso models for each ecoregion
 ```{r}
-#fit separate models by ecoregion
-data_lowmod_ca = data_lowmod_scale %>% filter(ecoregion == "California Coast")
-data_lowmod_nm = data_lowmod_scale %>% filter(ecoregion == "Northern Mountains")
-data_lowmod_sw = data_lowmod_scale %>% filter(ecoregion == "Southwest")
-data_lowmod_wm = data_lowmod_scale %>% filter(ecoregion == "Western Mountains")
-
-
 #function to fit sparse models and choose model with lambda = 1 se
 
 sparsemodel = function(df){
@@ -387,28 +502,40 @@ library(gamsel) # https://arxiv.org/abs/1506.03850
 
 
 #lump variables by category
-climate = c('AET', 'PRISM_ppt_', 'PRISM_ppt_', 'PRISM_tmea', 'PRISM_vpdm')
+climate = c('AET', 'PRISM_ppt_', 'PRISM_tmea', 'PRISM_vpdm')
 fire_hist = c('cbi_initial', 'time_betwe') 
-weather = c('erc_02_21', 'fm100_02_2', 'fm1000_02_', 'th_02_21', 'vpd_02_21', 'vs_02_21') #remove fm100 if keeping erc because they are highly correlated >.9
+weather = c('erc_02_21', 'th_02_21', 'vpd_02_21', 'vs_02_21') #remove fm100 if keeping erc because they are highly correlated >.9
 topo = c('heat_load', 'TPI_1024')
-fuels = c('ndvi', 'shrub_rebrn', 'tree_reburn')
+fuels = c('ndvi', 'tree_reburn') #remove shrubs
 manage = c('postmanage10', 'premanage10') #remove rows with postmanage from dataset for initial full analysis
 eco = 'ecoregion'
 
-#vars to include in gams
-vars = c(climate, fire_hist, weather, topo, fuels)
-#create matrix for gams with relevant variables
-x = data_lowmod_scale %>% dplyr::select(any_of(vars)) %>% as.matrix()
-y = data_lowmod_scale$cbi_reburn_logit
 #define interactions
-# ints = c(AET*time_betwe, PRISM_ppt_*time_betwe, PRISM_vpdm*time_betwe)
+data_lowmod_scale = data_lowmod_scale %>% 
+  mutate(AET_int = AET*time_betwe,
+         precip_int = PRISM_ppt_*time_betwe,
+         tmean_int = PRISM_tmea*time_betwe,
+         vpd_int = PRISM_vpdm*time_betwe)
+
+ints = c('AET_int', 'precip_int', 'tmean_int', 'vpd_int')
+
+#vars to include in gams
+vars = c(climate, fire_hist, weather, topo, fuels, ints)
+#create matrix for gams with relevant variables
+x = data_lowmod_scale %>% 
+  dplyr::select(any_of(vars)) %>% as.matrix()
+
+y = data_lowmod_scale$cbi_reburn_logit
+y = data_lowmod$cbi_reburn
 
 ```
 
-fit gamsel
+fit gamsel - chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://cran.r-project.org/web/packages/gamsel/gamsel.pdf 
+
+
 ```{r}
 #fit gamsel
-fit <- gamsel(x, y) 
+fit <- gamsel(x, y, df = 5, degree = 8) #
 
 #tuning gamsel: 
 #gamsel has a tuning parameter gamma which is between 0 and 1. Smaller values of gamma penalize the linear components less than the non-linear components, resulting in more linear components for the fitted model. The default value is gamma = 0.4.
@@ -420,30 +547,113 @@ fit <- gamsel(x, y)
 fit #Printing the returned gamsel object tells us how many features, linear components and non-linear components were included in the model for each lambda value respectively. It also shows the fraction of null deviance explained by the model and the lambda value for that model.
 
 
-summary(fit)
+summary(fit, label = TRUE)
 #plot fits - By default, plot() gives the fitted functions for the last value of the lambda key in fit, and gives plots for all the features.  The user can specify the index of the lambda value to show using the index option:
 
-par(mfrow = c(2, 5))
-# par(mar = c(4, 2, 2, 2))
-plot(fit, x, index = 32, which = 5:15)
+
+plot(fit, x, index = 19)
+
+```
+
+K-fold cross-validation for gamsel
+```{r}
+cv = cv.gamsel(x, y, nfolds = 5, parallel = TRUE)
+#gamma=.4 is assumed by default
+plot(cv)
 
 
-# Predictions
-# 
-# Predictions from this model can be obtained by using the predict method of the gamsel() function output: each column gives the predictions for a value of lambda.
+#fit gamsel with defined lambda
+fit1se <- gamsel(x, y, df = 5, degree = 8, lambda = cv$lambda.1se) 
+fit1se$betas
+
+plot(fit, newx =x, index = cv$index.1se)
+
+i = getActive(fit, index = 19)
+colnames(x[,i$l19])
+
+```
+
+
+Plot Predictions
+
+Predictions from this model can be obtained by using the predict method of the gamsel() function output: each column gives the predictions for a value of lambda.
+
+type = "terms" gives a matrix of fitted functions, with as many columns as there are variables. This can be useful for understanding the effect that each variable has on the response. Note that what is returned is a 3-dimensional array!
+
+```{r}
+library(boot)
+indiv_fits = predict(fit, x[, ], index = 19, type = "terms") #index = model number
+predict(fit, x[, ], index = 19, type = "nonzero")
+
+aet = seq(-2.5,4,length.out = 100)
+other = rep(0,100)
+
+newdat = matrix(c(aet,rep(other,17)),ncol = 18)
+aet_fit = predict(fit, newdat, index = 19, type = "terms")
+
+plot(aet, aet_fit[,,1])
+
+# plot(x[1:10000, 6], y[1:10000])
+# par(mfrow=c(2,5)) 
+plot(x[, 1], indiv_fits[, , 1], xlab = "AET", col = 'red', ylab = "effect of reburn cbi")
+# plot(x[1:10000, 3], indiv_fits[, , 3], xlab = "PRISM_tmea", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 5], indiv_fits[, , 5], xlab = "cbi_initial", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 6], indiv_fits[, , 6], xlab = "time_betwe", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 8], indiv_fits[, , 8], xlab = "th_02_21", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 9], indiv_fits[, , 9], xlab = "tvpd_02_21", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 10], indiv_fits[, , 10], xlab = "vs_02_21", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 12], indiv_fits[, , 12], xlab = "TPI_1024", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 13], indiv_fits[, , 13], xlab = "ndvi", col = 'red', ylab = "logit reburn cbi")
+# plot(x[1:10000, 15], indiv_fits[, , 15], xlab = "AET*time between", col = 'red', ylab = "logit reburn cbi")
+```
+
+GAM lasso with plsmselect https://cran.r-project.org/web/packages/plsmselect/vignettes/plsmselect.html 
+```{r}
+library(plsmselect)
+data_lowmod_scale$X <- model.matrix( ~ count_burn + cbi_initial,
+                        data=data_lowmod_scale)[,-1]
+
+gfit = gamlasso(cbi_reburn_logit ~ X +
+                  s(AET, k = 5, bs = "ts") +
+                  s(PRISM_ppt_, k = 5, bs = "ts") +
+                  s(PRISM_tmea, k = 5, bs = "ts") +
+                  # s(PRISM_vpdm, k = 5, bs = "ts") +
+                  # s(cbi_initial, k = 5, bs = "ts") + # fitting this as a linear term instead
+                  s(time_betwe, k = 5, bs = "ts") +
+                  s(erc_02_21, k = 5, bs = "ts") +
+                  # s(th_02_21, k = 5, bs = "ts") +
+                  s(vpd_02_21, k = 5, bs = "ts") +
+                  s(vs_02_21, k = 5, bs = "ts") +
+                  s(heat_load, k = 5, bs = "ts") +
+                  s(TPI_1024, k = 5, bs = "ts") +
+                  # s(tree_reburn, k = 5, bs = "ts") +
+                  s(time_betwe, by = AET, k = 5, bs = "ts") +
+                  s(time_betwe, by = PRISM_ppt_, k = 5, bs = "ts") +
+                  s(time_betwe, by = PRISM_tmea, k = 5, bs = "ts"),
+                data = data_lowmod_scale,
+                linear.penalty = "l1",
+                smooth.penalty = "l1",
+                seed = 1)
+
+summary(gfit)
+plot(gfit$cv.glmnet)
+
+summary(gfit$cv.glmnet$lambda.1se)
+
+plot(gfit$gam, pages=1)
+plot(data_lowmod_scale$cbi_reburn_logit, predict(gfit), xlab = "Observed values", ylab = "Fitted Values")
 ```
 
 
 
-
-# gfit = gamlasso(response = "cbi_reburn_logit",
-#                 linear.terms = 'count_burn',
-#                 smooth.terms = c(climate, fire_hist, weather, topo, fuels),
-#                 data = data_lowmod_scale,
-#                 linear.penalty = "l1",
-#                 smooth.penalty = "l1",
-#                 num.knots = 3,
-#                 seed = 1)
+#lump variables by category
+climate = c('AET', 'PRISM_ppt_', 'PRISM_tmea', 'PRISM_vpdm')
+fire_hist = c('cbi_initial', 'time_betwe') 
+weather = c('erc_02_21', 'fm100_02_2', 'fm1000_02_', 'th_02_21', 'vpd_02_21', 'vs_02_21') #remove fm100 if keeping erc because they are highly correlated >.9
+topo = c('heat_load', 'TPI_1024')
+fuels = c('ndvi', 'shrub_rebrn', 'tree_reburn')
+manage = c('postmanage10', 'premanage10') #remove rows with postmanage from dataset for initial full analysis
+eco = 'ecoregion'
 
 
 
@@ -515,7 +725,6 @@ Other options for variable selection:
 -fuels? (ndvi, tree, shrub)
 -climate (AET, PRISM)
 
-use GAMs to assess predictive performance with and without predictors
 
 
 
