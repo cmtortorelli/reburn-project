@@ -108,7 +108,7 @@ data_sub2 = data_sub %>%
   #lump wildfire codes
   mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
-  ecoregion = as.factor(ecoregion)) %>% 
+  ecoregion = as.factor(ecoregion)) %>%
   
   #remove 8 points with no weather data 
   filter(fm100_02_2 >0 & th_02_21 > 0 & vpd_02_21 > 0 &  fm1000_02_ > 0 & vs_02_21 > 0 &  erc_02_21 > 0) %>%
@@ -118,7 +118,7 @@ data_sub2 = data_sub %>%
   
   #set point id to row names 
   column_to_rownames(., 'pointid')
-
+  
 
 #clean up facts management data
 data_facts = data_sub2 %>%
@@ -133,9 +133,13 @@ data_facts = data_sub2 %>%
         time2manage_preburn = pmin(pfire_yrs2initial, mechanical_yrs2initial, na.rm = TRUE),
         premanage10 = time2manage_preburn <= 10,
         premanage10 = coalesce(premanage10, FALSE)) #set NBAs to FALSE
+
+
   
 #remove unnecessary columns
 data_clean = data_facts %>%
+  #rescale time between to decades
+  mutate(time_betwe = time_betwe/10) %>%
   dplyr::select(-c(LC20_Elev_, geom, grid_code, mostrecent, secondrece, max_yr_mechanical, max_yr_preburn_mechanical, max_yr_pfire, max_yr_preburn_pfire, pfire_yrs2reburn, pfire_yrs2initial, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn, mechanical_yrs2initial, count_trt_preburn, time2manage1, time2manage_preburn)) 
 
 #remove rows that were managed between initial and reburn (save these for a separate analyis)
@@ -319,43 +323,58 @@ test %>%
 ### Fit separate models for each ecoregion
 
 ```{r}
-#create new dfs for each ecoregion
-data_lowmod_ca = data_lowmod %>% filter(ecoregion == "California Coast")
-data_lowmod_nm = data_lowmod %>% filter(ecoregion == "Northern Mountains")
-data_lowmod_sw = data_lowmod %>% filter(ecoregion == "Southwest")
-data_lowmod_wm = data_lowmod %>% filter(ecoregion == "Western Mountains")
+#scale predictors for model fit - don't scale time between to maintain interpretation
+scale_df = function(df){
+  data_scale = scale(df[,c(1,3,5:21)], scale = TRUE, center = TRUE)
+  data_scale_all = cbind(data_scale, df[,c(2,4,22:32)])
+  return(data_scale_all)
+}
+
+#create new dfs for each ecoregion and scale each ecoregion separately 
+data_lowmod_ca = data_lowmod %>% filter(ecoregion == "California Coast") %>%
+  scale_df()
+
+data_lowmod_nm = data_lowmod %>% filter(ecoregion == "Northern Mountains") %>%
+  scale_df()
+
+data_lowmod_sw = data_lowmod %>% filter(ecoregion == "Southwest") %>%
+  scale_df()
+
+data_lowmod_wm = data_lowmod %>% filter(ecoregion == "Western Mountains") %>%
+  scale_df()
 
 ```
 
 Model fit/selection with mgcv 
 https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/gam.selection.html 
+https://stats.stackexchange.com/questions/519433/gam-and-multiple-continuous-continuous-interactions-tensor-smooths #helpful for interpretting and fitting interactions (ti vs te vs s)
 
 ```{r}
 library(mgcv)
 gm = function(df){
   
   #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
-  gamfit = gam(cbi_reburn ~ count_burn + #not logit tranformed response
-                  s(AET, k = 5, bs = "cs") +
-                  s(PRISM_ppt_, k = 5, bs = "cs") +
-                  s(PRISM_tmea, k = 5, bs = "cs") +
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  s(AET, k = 4, bs = "cs") +
+                  s(PRISM_ppt_, k = 4, bs = "cs") +
+                  s(PRISM_tmea, k = 4, bs = "cs") +
                   # s(PRISM_vpdm, k = 5, bs = "cs") +
-                  s(cbi_initial, k = 5, bs = "cs") +
-                  s(time_betwe, k = 5, bs = "cs") +
-                  s(erc_02_21, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 4, bs = "cs") +
+                  s(time_betwe, k = 4, bs = "cs") +
+                  s(erc_02_21, k = 4, bs = "cs") +
                   # s(th_02_21, k = 5, bs = "cs") +
-                  s(vpd_02_21, k = 5, bs = "cs") +
-                  s(vs_02_21, k = 5, bs = "cs") +
-                  s(heat_load, k = 5, bs = "cs") +
-                  s(TPI_1024, k = 5, bs = "cs") +
+                  s(vpd_02_21, k = 4, bs = "cs") +
+                  s(vs_02_21, k = 4, bs = "cs") +
+                  s(heat_load, k = 4, bs = "cs") +
+                  s(TPI_1024, k = 4, bs = "cs") +
                   # s(ndvi, k = 5, bs = "cs") +
                   # s(tree_reburn, k = 5, bs = "cs") +
-                  s(time_betwe, by = AET, k = 5, bs = "cs") +
-                  s(time_betwe, by = PRISM_ppt_, k = 5, bs = "cs") +
-                  s(time_betwe, by = PRISM_tmea, k = 5, bs = "cs") +
-                  s(time_betwe, by = vpd_02_21, k = 5, bs = "cs") +
-                  s(time_betwe, by = vs_02_21, k = 5, bs = "cs") +
-                  s(time_betwe, by = erc_02_21, k = 5, bs = "cs"),
+                  ti(time_betwe, by = AET, k = 4, bs = "cs") +
+                  ti(time_betwe, by = PRISM_ppt_, k = 4, bs = "cs") +
+                  ti(time_betwe, by = PRISM_tmea, k = 4, bs = "cs") +
+                  ti(time_betwe, by = vpd_02_21, k = 4, bs = "cs") +
+                  ti(time_betwe, by = vs_02_21, k = 4, bs = "cs") +
+                  ti(time_betwe, by = erc_02_21, k = 4, bs = "cs"),
                 data = df,
              select = T) 
 
@@ -363,15 +382,115 @@ gm = function(df){
 
 }
 
-fit_ca = summary(gm(data_lowmod_ca))
-fit_nm = summary(gm(data_lowmod_nm))
-fit_sw = summary(gm(data_lowmod_sw))
-fit_wm = summary(gm(data_lowmod_wm))
+fit_ca = gm(data_lowmod_ca)
+fit_nm = gm(data_lowmod_nm)
+fit_sw = gm(data_lowmod_sw)
+fit_wm = gm(data_lowmod_wm)
 
 ```
 
-#### Plot predictions
+### Predict
+
+>how to determine extreme vs. normal fire weather? using our data or local values? What cut offs to use? Should these be ecoregion specific?
+
 ```{r}
+#create prediction dfs with with 3 values for weather and all values for time between
+
+#prediction df with variables set to mean = 0
+preds_dfw_func = function(df, fit){
+  df_w_high = data.frame(count_burn = 0, 
+                       AET = 0, PRISM_ppt_ = 0, PRISM_tmea = 0, 
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                       #set weather variables to 3rd quantile value by ecoregion
+                       vpd_02_21 = quantile(df$vpd_02_21, 0.95),
+                       erc_02_21 = quantile(df$erc_02_21, 0.95),
+                       vs_02_21 = quantile(df$vs_02_21, 0.95),
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 2.5, by = .1),
+                       weather = "high")
+  df_w_mod = data.frame(count_burn = 0, 
+                       AET = 0, PRISM_ppt_ = 0, PRISM_tmea = 0, 
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                       #set weather variables to mean 
+                       vpd_02_21 = 0, erc_02_21 = 0, vs_02_21 = 0,
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 2.5, by = .1),
+                      weather = "mean")
+  df_w_low = data.frame(count_burn = 0, 
+                       AET = 0, PRISM_ppt_ = 0, PRISM_tmea = 0, 
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                       #set weather variables to 1st quantile value  
+                       vpd_02_21 = quantile(df$vpd_02_21, 0.25),
+                       erc_02_21 = quantile(df$erc_02_21, 0.25),
+                       vs_02_21 = quantile(df$vs_02_21, 0.25),
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 2.5, by = .1), 
+                      weather = "low")
+  
+  data_w = rbind(df_w_high, df_w_low, df_w_mod)
+  
+  #predict to new data
+  p = predict.gam(fit, newdata = data_w)
+  
+  #add predictions to df for plotting
+  data_w$cbi_reburn = p
+  return(data_w)
+}
+
+data_w_ca <- preds_dfw_func(df = data_lowmod_ca, fit = fit_ca)
+data_w_nm <- preds_dfw_func(df = data_lowmod_nm, fit = fit_nm)
+data_w_sw <- preds_dfw_func(df = data_lowmod_sw, fit = fit_sw)
+data_w_wm <- preds_dfw_func(df = data_lowmod_wm, fit = fit_wm)
+```
+
+#### Plot predictions
+
+```{r}
+library(gridExtra)
+
+pca = ggplot(data = data_w_ca, aes(x = time_betwe, y = cbi_reburn, color = weather)) +
+         geom_line() +
+         theme_bw() +
+  ggtitle("California coast")
+
+psw = ggplot(data = data_w_sw, aes(x = time_betwe, y = cbi_reburn, color = weather)) +
+         geom_line() +
+         theme_bw()+
+  ggtitle("Southwest")
+
+pnm = ggplot(data = data_w_nm, aes(x = time_betwe, y = cbi_reburn, color = weather)) +
+         geom_line() +
+         theme_bw()+
+  ggtitle("Northern mountains")
+
+pwm = ggplot(data = data_w_wm, aes(x = time_betwe, y = cbi_reburn, color = weather)) +
+         geom_line() +
+         theme_bw()+
+  ggtitle("Western mountains")
+
+grid.arrange(pca, psw, pnm, pwm, nrow= 2, ncol=2)
+```
+
+
+```{r}
+#When you use vis.gam() varying x and cov1 you are getting a plot of the expected response from the whole model s(x) + te(x, cov1) + other_stuff, when you vary input values x and cov1 while holding other_stuff at representative (or user supplied) values.
+vis.gam(fit_ca, view=c('time_betwe', 'AET'), n.grid=50, theta=35, phi=32, zlab="", too.far=0.1)
+vis.gam(fit_nm, view=c('time_betwe', 'AET'), n.grid=50, theta=35, phi=32, zlab="", too.far=0.1)
+vis.gam(fit_wm, view=c('time_betwe', 'AET'), n.grid=50, theta=35, phi=32, zlab="", too.far=0.1)
+vis.gam(fit_sw, view=c('time_betwe', 'AET'), n.grid=50, theta=35, phi=32, zlab="", too.far=0.1)
+
+
+p = predict.gam(fit_ca, newdata = mm)
+
+#extreme weather -
+erc_high = summary(data_lowmod$AET)
+
+
+
+
+preds_1 <- predict_gam(fit_ca, length_out = 100)
+                       
+plot(preds_1, "time_betwe")
 
 
 ```
