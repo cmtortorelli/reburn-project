@@ -20,7 +20,7 @@ library(terra)
 library(raster) # for the rasterize function in this package
 library(tictoc) # for simple tracking of computation time
 
-data_dir = readLines(here("data_dir.txt"), n=1)
+data_dir = readLines(here("data_dir_D.txt"), n=1)
 source(here("scripts/convenience_functions.R"))
 
 ```
@@ -147,16 +147,22 @@ tree1 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractP
 tree2 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractPoints2.csv"))
 tree3 = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/TreeExtractPoints3.csv"))
 
+#annual and perennial vegetation pre-fire
+afg =  read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/afg_gee_extract.csv"))
+pfg = read_csv(datadir("prelim-outputs/GEE_points_extract/rap-veg/pfg_gee_extract.csv"))
+
+
 #combine data subsets
 shrub = bind_rows(shrub1, shrub2, shrub3)
 tree = bind_rows(tree1, tree2, tree3)
 
+#create points df for joining to veg data
 points_reburnyr = points %>% dplyr::select(pointid, mostrecent, secondrece)
 
 #keep shrub data for year prior to reburn
 shrubl = shrub %>% 
   pivot_longer(!pointid, names_to = "shrub_yr", values_to = "shrub_rebrn") %>%
-  merge(points_reburnyr, ., all = TRUE) %>% 
+  merge(points_reburnyr, ., all.x = TRUE) %>% 
   mutate(shrub_yr = substr(shrub_yr, 1, 4),
          subset_yr = mostrecent - 1) %>% 
   subset(shrub_yr == subset_yr) %>%
@@ -167,23 +173,42 @@ shrubl = shrub %>%
 #reburn year tree cover
 treel = tree %>% 
   pivot_longer(!pointid, names_to = "tree_yr", values_to = "tree_reburn") %>%
-  merge(points_reburnyr, ., all = TRUE) %>% 
+  merge(points_reburnyr, ., all.x = TRUE) %>% 
   mutate(tree_yr = substr(tree_yr, 1, 4),
          subset_yr = mostrecent - 1) %>% 
   subset(tree_yr == subset_yr) %>%
   dplyr::select(pointid, tree_reburn)
 
-#initial year tree cover - NOT COMPLETE! *I only extracted tree cover for 2002-2021 from GEE*
-treeli = tree %>% 
-  pivot_longer(!pointid, names_to = "tree_yr", values_to = "tree_initial") %>%
-  merge(points_reburnyr, ., all = TRUE) %>% 
-  mutate(tree_yr = substr(tree_yr, 1, 4),
-         subset_yr = secondrece - 1) %>% 
-  subset(tree_yr == subset_yr) %>%
-  dplyr::select(pointid, tree_initial)
+#annual and perennial forb/grass cover
+afgl = afg %>% 
+  pivot_longer(!pointid, names_to = "afg_yr", values_to = "afg_rebrn") %>%
+  merge(points_reburnyr, ., all.x = TRUE) %>% 
+  mutate(afg_yr = substr(afg_yr, 1, 4), #get year from name
+         subset_yr = mostrecent - 1) %>% 
+  subset(afg_yr == subset_yr) %>%
+  dplyr::select(pointid, afg_rebrn)
+
+pfgl = pfg %>% 
+  pivot_longer(!pointid, names_to = "pfg_yr", values_to = "pfg_rebrn") %>%
+  merge(points_reburnyr, ., all.x = TRUE) %>% 
+  mutate(pfg_yr = substr(pfg_yr, 1, 4),
+         subset_yr = mostrecent - 1) %>% 
+  subset(pfg_yr == subset_yr) %>%
+  dplyr::select(pointid, pfg_rebrn)
+
+
+
+#initial year tree cover - NOT COMPLETE! 2020 is missing and need to pull in the tree_initial data for 1986-1999
+# treeli = tree %>% 
+#   pivot_longer(!pointid, names_to = "tree_yr", values_to = "tree_initial") %>%
+#   merge(points_reburnyr, ., all = TRUE) %>% 
+#   mutate(tree_yr = substr(tree_yr, 1, 4),
+#          subset_yr = secondrece - 1) %>% 
+#   subset(tree_yr == subset_yr) %>%
+#   dplyr::select(pointid, tree_initial)
 
 #merge initial and reburn tree year data
-treel = full_join(data.frame(treel), data.frame(treeli))
+# treel = full_join(data.frame(treel), data.frame(treeli))
 
 
 #select only NDVI from the year before reburn 
@@ -203,17 +228,21 @@ ndvil = ndvi %>% pivot_longer(!pointid, names_to = "ndvi_yr", values_to = "ndvi"
 points_gee = full_join(points, data.frame(ndvil))
 points_gee = full_join(points_gee, data.frame(shrubl))
 points_gee = full_join(points_gee, data.frame(treel))
+points_gee = full_join(points_gee, data.frame(afgl))
+points_gee = full_join(points_gee, data.frame(pfgl))
 ```
 
 
-#### Create new variable for intial burn CBI
+#### Create new variable for intial burn CBI 
+
+cbi of second most recent fire
 ```{r initial burn cbi}
 cbi = points_gee %>% 
   data.frame() %>%
-  dplyr::select(pointid, secondrece, cbi_2021:cbi_1995) %>%
+  dplyr::select(pointid, secondrece, cbi_2021:cbi_1985) %>%
   pivot_longer(!c(pointid, secondrece), names_to = "cbi_yr", values_to = "cbi_initial") %>%
-  mutate(cbi_yr = as.numeric(substr(cbi_yr, 5, 8))) %>%
-  subset(cbi_yr == secondrece) %>%
+  mutate(cbi_yr = as.numeric(substr(cbi_yr, 5, 8))) %>% #get year
+  subset(cbi_yr == secondrece) %>% #extract cbi from most second most recent fire year
   dplyr::select(pointid, cbi_initial)
 
 points_gee = full_join(points_gee, data.frame(cbi))
@@ -236,7 +265,7 @@ points_cleaned = st_intersection(points_cleaned, eco)
 #### Extract cleaned FACTS management data to points & keep only relevant management
 ```{r extract FACTS to points}
 #read in facts
-facts <- st_read(datadir("raw-data/facts/compiled/facts_compiled_for_points_extract.gpkg"))
+facts <- st_read(datadir("raw-data/facts/compiled/facts_compiled_for_points_extract_west.gpkg"))
 
 facts = facts %>% st_transform(st_crs(points_cleaned)) %>%
   mutate(activity_yr = paste(NEW_ACTIVITY, year, sep = "_")) %>%
@@ -246,10 +275,10 @@ facts = facts %>% st_transform(st_crs(points_cleaned)) %>%
 
 # Extract FACTS history at each plot 
 facts_int = st_intersection(points_reburnyr, facts)
-st_write(facts_int, datadir("prelim-outputs/points/points_buff_facts_int-12-13-22.gpkg"))
+st_write(facts_int, datadir("prelim-outputs/points/points_buff_facts_int-1-12-23.gpkg"))
 # facts_int = st_read(datadir("prelim-outputs/points/points_buff_facts_int-12-8-22.gpkg"))
 
-#Keep only management that occurs between burn years
+#select management that occurs between burn years
 facts_keep = facts_int %>%
   mutate(facts_yr = as.numeric(str_sub(activity_yr,-4,-1)),
          facts_activ = as.factor(str_sub(activity_yr, 1, -6))) %>%
@@ -289,13 +318,13 @@ facts_preburn = facts_preburn %>% data.frame() %>%
 
 
 #check for duplicates
-# summary(duplicated(facts_group$pointid))
+summary(duplicated(facts_group$pointid))
 
 #join management info to points_cleaned
 points_cleaned_facts = left_join(points_cleaned, facts_group) #add in managment that occured between the initial and the reburn fires
 points_cleaned_facts = left_join(points_cleaned_facts, facts_preburn)#add in managemnet that occured before the initial fire
 
-st_write(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_facts-12-13-22.gpkg"))
+st_write(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_facts-1-12-23.gpkg"))
 ```
 
 
@@ -354,14 +383,14 @@ initial_fire_id = left_join(initial_fire_id, fire_id_table) %>%
 fire_id = left_join(reburn_fire_id, initial_fire_id)
 
 # check if there are multiple fires in the same year for the same point id
-# fire_id[duplicated(fire_id$pointid)==TRUE,] #22 duplicate ids for initial fires before 2000 and all wildfire, so not a problem
+# fire_id[duplicated(fire_id$pointid)==TRUE,] #22 duplicate ids for initial fires before 2000 and all wildfire, so not a big problem
 
 #join to points data
 points_cleaned_facts_perims = left_join(points_cleaned_facts, fire_id)
 
 
 #write intersected sample points
-st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims-12-13-22.gpkg"))
+st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims-1-12-23.gpkg"))
 # write.csv(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.csv"))
 # 
 # points_cleaned_facts_perims = st_read(datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
@@ -382,7 +411,7 @@ points_fs_include = lengths(points_fs) > 0
 points_fs_include = points_cleaned_facts_perims[points_fs_include,]
 
 #write data for analysis
-st_write(points_fs_include, datadir("prelim-outputs/points/points_for_analysis_12-13-22.gpkg"))
+st_write(points_fs_include, datadir("prelim-outputs/points/points_for_analysis_1-12-23.gpkg"))
 
 
 ```
