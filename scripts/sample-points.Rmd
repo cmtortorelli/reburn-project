@@ -325,6 +325,7 @@ points_cleaned_facts = left_join(points_cleaned, facts_group) #add in managment 
 points_cleaned_facts = left_join(points_cleaned_facts, facts_preburn)#add in managemnet that occured before the initial fire
 
 st_write(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_facts-1-12-23.gpkg"))
+# points_cleaned_facts = st_read(datadir("prelim-outputs/points/points_cleaned_facts-1-12-23.gpkg"))
 ```
 
 
@@ -333,12 +334,12 @@ st_write(points_cleaned_facts, datadir("prelim-outputs/points/points_cleaned_fac
 Determine if fires were wildfires or perscribed 
 ```{r}
 #perimeter data
-perims = st_read(datadir("raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
-
-points_perims_int = st_intersection(points, perims)
+# perims = st_read(datadir("raw-data/fire-perims/mtbs_perimeter_data/mtbs_west_fs_nps_sub_updated21.shp"))
+# 
+# points_perims_int = st_intersection(points, perims)
 
 # st_write(points_perims_int, datadir("prelim-outputs/points/points_perims_int.shp"))
-# points_perims_int = st_read(datadir("prelim-outputs/points/points_perims_int.shp"))
+points_perims_int = st_read(datadir("prelim-outputs/points/points_perims_int.shp"))
 
 #get reburn fire id
 reburn_fire_id = points_perims_int %>% data.frame() %>%
@@ -360,25 +361,29 @@ initial_fire_id = points_perims_int %>% data.frame() %>%
 #read in mtbs and wfigs fire_id infmation and select relevant columns
 mtbs_ids = read.csv(datadir("raw-data/fire_id_tables/mtbs_id_table.csv")) %>%
   mutate(Fire_ID = Event_ID, 
-         Fire_Type = as.factor(Incid_Type)) %>%
-  dplyr::select(Fire_ID, Fire_Type) 
+         Fire_Type = as.factor(Incid_Type),
+         Fire_size = BurnBndAc) %>%
+  dplyr::select(Fire_ID, Fire_Type, Fire_size) 
 
 wfigs_ids = read.csv(datadir("raw-data/fire_id_tables/wfigs21_id_table.csv")) %>% 
     mutate(Fire_ID = irwin_UniqueFireIdentifier, 
-         Fire_Type = as.factor(poly_FeatureCategory)) %>%
-  dplyr::select(Fire_ID, Fire_Type) 
+         Fire_Type = as.factor(poly_FeatureCategory),
+         Fire_size = irwin_CalculatedAcres) %>%
+  dplyr::select(Fire_ID, Fire_Type, Fire_size) 
 
 #combine into one fire id table
 fire_id_table = rbind(mtbs_ids, wfigs_ids)
 
 #join to fire peimeter points interesct dfs above
 reburn_fire_id = left_join(reburn_fire_id, fire_id_table) %>%
-  mutate(reburn_fire_type = Fire_Type) %>%
-  dplyr::select(pointid, reburn_fire_type, reburn_fireID)
+  mutate(reburn_fire_type = Fire_Type,
+         reburn_fire_size = Fire_size) %>%
+  dplyr::select(pointid, reburn_fire_type, reburn_fireID, reburn_fire_size)
 
 initial_fire_id = left_join(initial_fire_id, fire_id_table) %>%
-    mutate(initial_fire_type = Fire_Type) %>%
-  dplyr::select(pointid, initial_fire_type, initial_fireID)
+    mutate(initial_fire_type = Fire_Type,
+           initial_fire_size = Fire_size) %>%
+  dplyr::select(pointid, initial_fire_type, initial_fireID, initial_fire_size)
 
 fire_id = left_join(reburn_fire_id, initial_fire_id)
 
@@ -390,7 +395,7 @@ points_cleaned_facts_perims = left_join(points_cleaned_facts, fire_id)
 
 
 #write intersected sample points
-st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims-1-12-23.gpkg"))
+st_write(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims-1-13.3-23.gpkg"))
 # write.csv(points_cleaned_facts_perims, datadir("prelim-outputs/points/points_cleaned_facts_perims.csv"))
 # 
 # points_cleaned_facts_perims = st_read(datadir("prelim-outputs/points/points_cleaned_facts_perims.gpkg"))
@@ -411,7 +416,7 @@ points_fs_include = lengths(points_fs) > 0
 points_fs_include = points_cleaned_facts_perims[points_fs_include,]
 
 #write data for analysis
-st_write(points_fs_include, datadir("prelim-outputs/points/points_for_analysis_1-12-23.gpkg"))
+st_write(points_fs_include, datadir("prelim-outputs/points/points_for_analysis_1-13.3-23.gpkg"))
 
 
 ```
