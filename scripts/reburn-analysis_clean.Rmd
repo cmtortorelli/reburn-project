@@ -98,8 +98,8 @@ data = data %>% mutate(sample_zones = sample_zones$lyr.1)
 data_sub = data %>% 
   filter(tree_reburn >= 40 & #have greater than 40% tree cover at time of reburn
            mostrecent > 2001 & #second fire occurred after 2001 (for MODIS weather data)
-           cbi_initial > 0.5 & #burned at >0.5 CBI in initial or reburn (cni85_21) fires (remove unburned areas to limit residual error
-           cni85_21 > 0.5) %>%
+           cbi_initial >= 0.5 & #burned at >0.5 CBI in initial or reburn (cni85_21) fires (remove unburned areas to limit residual error
+           cni85_21 >= 0.5) %>%
   filter(!is.na(ecoregion)) #remove points that fall outside of our 4 ecoregions
 
 # 
@@ -197,6 +197,17 @@ data_high = data_nomanage %>%
 
 data_lowmod = data_nomanage %>%
   filter(cbi_initial < 2.5)
+
+#proportion of managed cells
+# data_clean %>% filter(cbi_initial < 2.5) %>% nrow() - nrow(data_lowmod) #477
+# 477/data_clean %>% filter(cbi_initial < 2.5) %>% nrow()
+
+# count_unique_reburns = data_lowmod %>%
+#   group_by(initial_fireID, reburn_fireID, ecoregion) %>%
+#   summarise(n = n()) %>%
+#   group_by(ecoregion) %>%
+#   summarise(n = n())
+
 ```
 
 Separate by ecoregion and thin spatially 
@@ -205,27 +216,27 @@ Separate by ecoregion and thin spatially
 data_wgs = st_transform(data_lowmod, 4326)
 
 #create new dfs for each ecoregion
-data_lowmod_ca = data_wgs %>% filter(ecoregion == "California Coast")
-
-data_lowmod_nm = data_wgs %>% filter(ecoregion == "Northern Mountains")
-
-data_lowmod_sw = data_wgs %>% filter(ecoregion == "Southwest")
-
-data_lowmod_wm = data_wgs %>% filter(ecoregion == "Western Mountains")
-#additional subsetting for spaital thinning (cannot allocate vector for the entire wm)
-data_lowmod_wm1 = data_lowmod_wm %>% filter(lat < 41.36737 )
-data_lowmod_wm2 = data_lowmod_wm %>% filter(lat >= 41.36737 )
+# data_lowmod_ca = data_wgs %>% filter(ecoregion == "California Coast")
+# 
+# data_lowmod_nm = data_wgs %>% filter(ecoregion == "Northern Mountains")
+# 
+# data_lowmod_sw = data_wgs %>% filter(ecoregion == "Southwest")
+# 
+# data_lowmod_wm = data_wgs %>% filter(ecoregion == "Western Mountains")
+# #additional subsetting for spaital thinning (cannot allocate vector for the entire wm)
+# data_lowmod_wm1 = data_lowmod_wm %>% filter(lat < 41.36737 )
+# data_lowmod_wm2 = data_lowmod_wm %>% filter(lat >= 41.36737 )
 
 #spatial thin all ecoregions to 0.5km 
-library(spThin)
-thin(loc.data = data_lowmod_wm2,
-               lat.col = "lat",
-               long.col = "long",
-               spec.col = "ecoregion",
-               thin.par = 0.5,
-               reps = 3,
-               out.dir = datadir("prelim-outputs/points"),
-               verbose = TRUE)
+# library(spThin)
+# thin(loc.data = data_lowmod_wm2,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points"),
+#                verbose = TRUE)
 
 
 ```
@@ -454,6 +465,7 @@ gm_prism = function(df, k){
 
              data = df,
              select = T,
+             gamma = 1.4,
              method = "fREML") 
 
   return(gamfit)
@@ -467,10 +479,10 @@ gm_prism = function(df, k){
 Examine model fits
 ```{r}
 #not aet, includes prism temp/precip
-fit3_ca = gm_prism(thin_ca, k = 6)
-fit3_nm = gm_prism(thin_nm, k = 6)
-fit3_sw = gm_prism(thin_sw, k = 6)
-fit3_wm = gm_prism(thin_wm, k = 6)
+fit3_ca = gm_prism(thin_ca, k = 5)
+fit3_nm = gm_prism(thin_nm, k = 5)
+fit3_sw = gm_prism(thin_sw, k = 5)
+fit3_wm = gm_prism(thin_wm, k = 5)
 
 plot(fit3_ca)
 plot(fit3_nm)
@@ -1097,15 +1109,30 @@ thin_wm_veg = left_join(thin_wm_xy, data_lowmod_wm2  %>%
 ```{r}
 data_thin = rbind(thin_ca_veg, thin_wm_veg, thin_sw_veg, thin_nm_veg)
 
+data_thin$total_veg_cover = data_thin$tree_reburn + data_thin$afg_rebrn + data_thin$pfg_rebrn + data_thin$shrub_rebrn
+
 data_veg = data_thin %>% pivot_longer(c(afg_rebrn, pfg_rebrn, shrub_rebrn, tree_reburn), names_to ="veg_type", values_to = "reburn_cover")
   
 data_veg  %>% ggplot() +
   geom_boxplot(aes(y = reburn_cover, x = ecoregion, fill = veg_type)) +
   theme_bw(13)
 
+data_veg %>% filter(veg_type != "tree_reburn") %>%
+  ggplot(aes(x = reburn_cover, y = ecoregion, fill = veg_type))+
+  geom_bar(position = "fill", stat = "identity")+
+  theme_minimal()
+
+
 #veg types ~ initial cbi and time between
 data_veg  %>% 
   ggplot(aes(y = reburn_cover, x = time_betwe, color = cut(cbi_initial, breaks = seq(.5, 3, by = 0.75)))) +
+  geom_smooth()+
+  facet_grid(rows = vars(veg_type), cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+
+#precip + temp
+data_veg  %>% 
+  ggplot(aes(y = reburn_cover, x = PRISM_ppt_, color = cut(PRISM_tmea, breaks = c(0.65, 8, 12, 19)))) +
   geom_smooth()+
   facet_grid(rows = vars(veg_type), cols= vars(ecoregion), scales = "free")+
   theme_bw(13)
@@ -1144,7 +1171,8 @@ data_thin_bps = left_join(data_thin, ct_bps)
 
 library(ggridges)
 data_thin_bps %>% 
-  ggplot(aes(x = cbi_initial, y = CT_lumped_codes2, group = CT_lumped_codes2, fill = CT_lumped_codes2))+
+  filter(CT_lumped_codes2 %in% common_bps) %>%
+  ggplot(aes(x = time_betwe, y = CT_lumped_codes2, group = CT_lumped_codes2, fill = CT_lumped_codes2))+
   geom_density_ridges()+
   facet_grid(cols= vars(ecoregion), scales = "free")+
   theme_bw(13)+scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "light grey", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788"))
@@ -1154,7 +1182,11 @@ data_thin_bps %>%
 #   geom_bar(position = "fill", stat = "identity")+
 #   theme_bw(13)
 
-data_thin_bps %>% 
+count_bps = data_thin_bps %>% group_by(CT_lumped_codes2) %>% summarise(n = n())
+
+common_bps = c("Mixed Conifer Forest", "Mixed Evergreen", "Ponderosa Pine Woodland", "Riparian", "Spruce-Fir Forest", "Douglas-fir-Western Hemlock Forest", "Oak Woodland", "Pine-Oak Forest", "Shrubland/Chaparral", "Red Fir Forest", "Douglas-fir Forest", "Coastal Redwood Forest", "Subalpine Woodland", "Pinyon-Juniper Woodland")
+
+data_thin_bps %>%
   ggplot(aes(x = n, y = ecoregion, fill = CT_lumped_codes2))+
   geom_bar(position = "fill", stat = "identity")+
   theme_bw(13)+ scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "light grey", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788"))
