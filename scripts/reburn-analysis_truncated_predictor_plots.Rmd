@@ -14,10 +14,6 @@ This script cleans and analyzes data for reburn analyses.
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-
-
-
-
 library(randomForest)
 library(ranger) #a faster version of the RF algorithm
 # library(pdp)# for partial dependence plots (PDPs)
@@ -58,40 +54,11 @@ data$long = coords$X
 
 
 
-### Prep data for spatial partioning into test and training datasets 
-> backwards selection
-> mumin
-> RF for important predictors, spatial zone splitting? 
-
-Assign each point to spatial sampling zone 12km
-```{r}
-#determine data extent
-extent(data)
-# plot(extent)
-e = ext(c(-2280909, -626619.3, 1007070, 3117660)) #xmin, xmax, ymin, ymax extent of data
-p = as.polygons(e) #covert to polygons
-crs(p) = crs(data) #set crs
-
-r = rast(p) #convert raster
-
-zones = rast(p, resolution = c(12000, 12000))
-values(zones) = 1:ncell(zones)
-
-# plot(zones)
-
-#extract zone value to points
-data$sample_zones = extract(zones, data, ID=FALSE)
-
-#get rid of ID var in sample zones 
-data = data %>% mutate(sample_zones = sample_zones$lyr.1) 
-
-```
-
 # Select points for analysis based on following criteria:
 
 - Not on FS land (focus analysis on forested FS land, and for management)
-- Less than 25% tree cover at time of reburn (focus analysis on forested areas)
-- second fire occurred before 2002 (limited by MODIS for day of fire weather)
+- Less than 40% tree cover at time of reburn (focus analysis on forested areas)
+- second fire occurred after 2001 (limited by MODIS for day of fire weather)
 - burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimeter)
 
 ```{r}
@@ -112,13 +79,13 @@ Remove non-forested areas
 ```{r}
 bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/unique_LF16_BPS_200_codes_thinned_reburn_data.csv"))
 
-data_sub1 = left_join(data_sub, ct_bps) %>% 
+data_sub1 = left_join(data_sub, bps_codes) %>% 
   filter(CT_lumped_codes3 != "Non-forest" & 
            CT_lumped_codes3 != "Shrubland/Chaparral")
 
 ```
 
-add in erc percentiles
+add in weather percentiles
 ```{r}
 #add missing data 
 #add weather percentiles for erc, vs, and vpd 
@@ -139,16 +106,10 @@ data_sub2 = data_sub1 %>%
   mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
   ecoregion = as.factor(ecoregion)) %>%
-  
-  #remove 8 points with no weather data 
-  filter(fm100_02_2 >0 & th_02_21 > 0 & vpd_02_21 > 0 &  fm1000_02_ > 0 & vs_02_21 > 0 &  erc_02_21 > 0) %>%
-  
+
   #remove 122 points without AET data
   filter(AET > 0) 
-  
-  #set point id to row names 
-  # column_to_rownames(., 'pointid')
-  
+
 
 #clean up facts management data
 data_facts = data_sub2 %>%
@@ -175,25 +136,9 @@ data_clean = data_facts %>%
 #write out cleaned_data
 # st_write(data_clean,datadir("prelim-outputs/points/data_clean_for_analaysis.gpkg"))
 
-#remove rows that were managed between initial and reburn (save these for a separate analyis)
+#remove rows that were managed between initial and reburn (save these for a separate analysis)
 data_nomanage = data_clean %>% filter(postmanage10 == FALSE)
 
-
-# # subsample large fires (max points per fire = 1000)
-# data_subsample1 = data_nomanage %>%
-#   group_by(reburn_fireID) %>%
-#   mutate(count_points_reburn = n()) %>%
-#   filter(count_points_reburn > 700) %>% 
-#   slice_sample(n = 700)
-# 
-# # summary(data_subsample1$count_points_reburn)
-# 
-# data_subsample2 = data_nomanage %>%
-#   group_by(reburn_fireID) %>%
-#   mutate(count_points_reburn = n()) %>%
-#   filter(count_points_reburn <= 700)
-# 
-# data_subsample = bind_rows(data_subsample1, data_subsample2)
 ```
 
 ```{r}
@@ -218,203 +163,111 @@ data_lowmod = data_nomanage %>%
 
 Separate by ecoregion and thin spatially 
 ```{r}
-#transform for spatial thinning
-data_wgs = st_transform(data_lowmod, 4326)
-
-#create new dfs for each ecoregion
-# data_lowmod_ca = data_wgs %>% filter(ecoregion == "California Coast")
+# #transform for spatial thinning
+# data_wgs = st_transform(data_lowmod, 4326)
 # 
-# data_lowmod_nm = data_wgs %>% filter(ecoregion == "Northern Mountains")
-# 
-# data_lowmod_sw = data_wgs %>% filter(ecoregion == "Southwest")
-# 
-# data_lowmod_wm = data_wgs %>% filter(ecoregion == "Western Mountains")
+# # create new dfs for each ecoregion
+# data_wgs_ca = data_wgs %>% filter(ecoregion == "California Coast")
+# data_wgs_nm = data_wgs %>% filter(ecoregion == "Northern Mountains")
+# data_wgs_sw = data_wgs %>% filter(ecoregion == "Southwest")
+# data_wgs_wm = data_wgs %>% filter(ecoregion == "Western Mountains")
 # #additional subsetting for spaital thinning (cannot allocate vector for the entire wm)
-# data_lowmod_wm1 = data_lowmod_wm %>% filter(lat < 41.36737 )
-# data_lowmod_wm2 = data_lowmod_wm %>% filter(lat >= 41.36737 )
-
-#spatial thin all ecoregions to 0.5km 
+# data_wgs_wm1 = data_lowmod_wm %>% filter(lat < 41.36737 )
+# data_wgs_wm2 = data_lowmod_wm %>% filter(lat >= 41.36737 )
+# 
+# # spatial thin all ecoregions to 0.5km
 # library(spThin)
-# thin(loc.data = data_lowmod_wm2,
+# thin(loc.data = data_wgs_ca,
 #                lat.col = "lat",
 #                long.col = "long",
 #                spec.col = "ecoregion",
 #                thin.par = 0.5,
 #                reps = 3,
-#                out.dir = datadir("prelim-outputs/points"),
+#                out.dir = datadir("prelim-outputs/points/ca"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_nm,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/nm"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_sw,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/sw"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_wm1,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm1"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_wm2,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm2"),
+#                verbose = TRUE)
+# 
+# 
+# #rethin western mountains to get rid of a few points in the spatial overlap
+# #combine wm1 and wm2
+# thin_wm1 = read.csv(datadir("prelim-outputs/points/wm1/thinned_data_thin1.csv"))
+# thin_wm2 = read.csv(datadir("prelim-outputs/points/wm2/thinned_data_thin1.csv"))
+# thin_wm = bind_rows(thin_wm1, thin_wm2)
+# 
+# #rethin
+# thin(loc.data = thin_wm,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm"),
 #                verbose = TRUE)
 
 
 ```
 
-
-
-### Split data into train and test
-
-
-Partition data to test and train sets stratified by sample zones 
+Thinned data
 ```{r}
-library(splitTools) #https://cran.r-project.org/web/packages/splitTools/vignettes/splitTools.html
-library(ranger)
+#thin data
 
-set.seed(222)
-
-# Split into training and test stratified by sample zones
-
-inds = partition(data_lowmod$sample_zones, p = c(train = 0.7, test = 0.3))
-str(inds)
-
-train <- data_lowmod[inds$train, ]
-test <- data_lowmod[inds$test, ]
-
-# Get stratified cross-validation in-sample indices
-folds <- create_folds(train$sample_zones, k = 5)
-
-
-```
-
-
-
-### Explore correlations between variables
-```{r}
-library(purrr)
-
-#keep only numeric variables
-data_num = data_lowmod %>%
-  keep(is.numeric)
-
-# library(PerformanceAnalytics)
-# cor(data_num, method = "pearson", use = "complete.obs")
-# chart.Correlation(cor(data_num))
-
-weather = data_lowmod %>% dplyr::select(erc_perc, vs_perc, th_02_21, fm1000_02_, fm100_02_2, vpd_perc, cbi_reburn, cbi_initial, lat, long)
-
-clim_topo = data_lowmod %>% dplyr::select(heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, cbi_initial, time_betwe, lat, long)
-
-firehist = data_lowmod %>% dplyr::select(time_betwe, count_burn, cbi_reburn, cbi_initial, lat, long)
-```
-
-Plot correlations
-```{r}
-library(GGally)
-library(corrplot)
-
-corrplot(cor(weather),  method = 'circle', type = 'lower', insig='blank',
-         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
-
-corrplot(cor(clim_topo),  method = 'circle', type = 'lower', insig='blank',
-         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
-
-corrplot(cor(firehist),  method = 'circle', type = 'lower', insig='blank',
-         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
-
-# ggpairs(weather, ggplot2::aes(colour=ecoregion))
-# ggpairs(weather)
-# ggpairs(clim_topo)
-# ggpairs(firehist)
-
-#strongest correlations between weather variables, fuels variables, and lat/long
-#> selected precip and temp over AET and PRISM_vpd, and erc over fm100/1000
-```
-
-
-
-#### Explore indiviual variable relationships with cbi reburn
-```{r}
-
-data_lowmod %>%
-  dplyr::select(-c(reburn_fire_type, initial_fire_type, initial_fireID, reburn_fireID, postmanage10, premanage10, sample_zones, lat, long, LC16_BPS_2, count_trt_preburn_mechanical, count_trt_preburn_pfire, time2manage)) %>%
-  pivot_longer(!c(cbi_reburn, ecoregion), names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
-  ggplot(aes(x = value, y = cbi_reburn, color = ecoregion)) +
-  facet_wrap(~ key, scales = "free") +
-  geom_smooth(formula = y ~ s(x, bs = "cs", k = 3)) +
-  theme_bw(13)
-
-
-```
-
-
-#### Logistic tranform "reburn cbi" response variable because its bounded 0.5-3 
->not sure if we need to do this if using GAMs?
-
-```{r}
-#functions to normalize and logit transform response var
-normalize <- function(x) {
-return ((x - 0.5) / (3.01 - 0.5)) #severity range = 0.5-3 (a few observations have severity = 3 so setting upper bound to 3.01)
-}
-
-logit <- function(x) {
-  return(
-    log(x/(1-x))
-  )
-}
-
-#scale reburn CBI from 0-1
-test$cbi_reburn_scale = normalize(test$cbi_reburn) 
-```
-
-
-
-
-### Fit separate models for each ecoregion and scale predictors
-
-```{r}
-#scale numeric predictors for model fit - don't scale time between t or cbi or erc percentiles to maintain interpretation
-preds_2scale = c("heat_load", "PRISM_tmea", "PRISM_ppt_", "TPI_1024", "LC16_BPS_2", "fm100_02_2", "th_02_21", "vpd_02_21", "erc_02_21", "PRISM_vpdm", "AET", "fm1000_02_", "ndvi", "shrub_rebrn", "tree_reburn", "afg_rebrn", "pfg_rebrn")
-
-data_lowmod = data.frame(data_lowmod)
-
-scale_df = function(df){
-  data_scale = scale(df[(names(df) %in% preds_2scale)], scale = TRUE, center = TRUE)
-  data_scale_all = cbind(data_scale, df[!(names(df) %in% preds_2scale)])
-  return(data_scale_all)
-}
-
-#create new dfs for each ecoregion and scale each ecoregion separately 
-data_lowmod_ca = data_lowmod %>% filter(ecoregion == "California Coast") %>%
-  scale_df()
-
-data_lowmod_nm = data_lowmod %>% filter(ecoregion == "Northern Mountains") %>%
-  scale_df()
-
-data_lowmod_sw = data_lowmod %>% filter(ecoregion == "Southwest") %>%
-  scale_df()
-
-data_lowmod_wm = data_lowmod %>% filter(ecoregion == "Western Mountains") %>%
-  scale_df()
-
-#thinned scaled data
-
-thin_sw = read.csv(datadir("prelim-outputs/points/thinned_data_sw.csv")) %>%
+thin_sw = read.csv(datadir("prelim-outputs/points/sw/thinned_data_thin1.csv")) %>%
   mutate_at(vars(lat, long), list(~ round(., 5)))
-thin_sw = inner_join(thin_sw, data_lowmod_sw %>% mutate_at(vars(lat, long), list(~ round(., 5))))
 
-thin_nm = read.csv(datadir("prelim-outputs/points/thinned_data_nm.csv"))%>%
+thin_nm = read.csv(datadir("prelim-outputs/points/nm/thinned_data_thin1.csv"))%>%
   mutate_at(vars(lat, long), list(~ round(., 5)))
-thin_nm = inner_join(thin_nm, data_lowmod_nm  %>%
-  mutate_at(vars(lat, long), list(~ round(., 5))))
 
-thin_nm = read.csv(datadir("prelim-outputs/points/thinned_data_nm.csv"))%>%
+thin_ca = read.csv(datadir("prelim-outputs/points/ca/thinned_data_thin1.csv"))%>%
   mutate_at(vars(lat, long), list(~ round(., 5)))
-thin_nm = inner_join(thin_nm, data_lowmod_nm  %>%
-  mutate_at(vars(lat, long), list(~ round(., 5))))
 
-
-thin_ca = read.csv(datadir("prelim-outputs/points/thinned_data_ca.csv"))%>%
+thin_wm = read.csv(datadir("prelim-outputs/points/wm/thinned_data_thin1.csv")) %>%
   mutate_at(vars(lat, long), list(~ round(., 5)))
-thin_ca = inner_join(thin_ca, data_lowmod_ca  %>%
-  mutate_at(vars(lat, long), list(~ round(., 5))))
-
-thin_wm1 = read.csv(datadir("prelim-outputs/points/thinned_data_wm1.csv"))
-thin_wm2 = read.csv(datadir("prelim-outputs/points/thinned_data_wm2.csv"))
-thin_wm = bind_rows(thin_wm1, thin_wm2) %>%
-  mutate_at(vars(lat, long), list(~ round(., 5)))
-thin_wm = inner_join(thin_wm, data_lowmod_wm  %>%
-  mutate_at(vars(lat, long), list(~ round(., 5))))
-
 
 data_thin = bind_rows(thin_ca, thin_wm, thin_nm, thin_sw)
+data_lowmod = data_lowmod %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+data_thin = inner_join(data_thin,data_lowmod)
+
+#write thinned data
+# write.csv(data_thin, datadir("prelim-outputs/points/thinned_data_2-6-23.csv"))
 ```
+
+## Explore data
 
 sample sizes
 ```{r}
@@ -432,14 +285,144 @@ data_thin %>%
 nrow(data_thin)
 ```
 
+```{r}
+#climate space
+ggplot(data = data_thin, aes(color = ecoregion, x = PRISM_tmea, y = PRISM_ppt_)) +
+  geom_point(alpha = .2)+
+  stat_ellipse(size = 1, type = "t")+ # 95% confidence level for a multivariate t-distribution
+  theme_bw(13)+
+  xlab("Precipitation (mm)") +
+  ylab(expression("Temperature " ( degree*C)))+
+  scale_color_manual(values = c("#264653","#2A9D8F","#dbd053","#6a0136"))
+
+#time between
+ggplot(data = data_thin, aes(fill = ecoregion, x = time_betwe*10)) +
+  geom_histogram(bins = 20)+
+  theme_bw(13)+
+  xlab("time between initial fire and reburn") +
+  scale_fill_manual(values = c("#264653","#2A9D8F","#dbd053","#6a0136"))+
+  facet_wrap(~ ecoregion)
+
+#initial cbi
+ggplot(data = data_thin, aes(fill = ecoregion, x = cbi_initial)) +
+  geom_histogram()+
+  theme_bw(13)+
+  xlab("Initial CBI") +
+  scale_fill_manual(values = c("#264653","#2A9D8F","#dbd053","#6a0136"))+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5))+
+  facet_wrap(~ecoregion)
+
+#reburn cbi
+ggplot(data = data_thin, aes(fill = ecoregion, x = cbi_reburn)) +
+  geom_histogram()+
+  theme_bw(13)+
+  xlab("Initial CBI") +
+  scale_fill_manual(values = c("#264653","#2A9D8F","#dbd053","#6a0136"))+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5))+
+  facet_wrap(~ecoregion)
+```
+
+Explore vegetation
+```{r}
+
+
+```
+
+### Explore correlations between variables
+```{r}
+library(purrr)
+
+#keep only numeric variables
+data_num = data_thin %>%
+  keep(is.numeric)
+
+# library(PerformanceAnalytics)
+# cor(data_num, method = "pearson", use = "complete.obs")
+# chart.Correlation(cor(data_num))
+
+weather = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, erc_02_21, vs_02_21, vpd_02_21, th_02_21, fm1000_02_, fm100_02_2, cbi_reburn, lat, long)
+
+clim_topo = data_thin %>% data.frame() %>%
+  dplyr::select(heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, lat, long)
+
+firehist = data_thin %>% data.frame() %>%
+  dplyr::select(time_betwe, count_burn, cbi_reburn, cbi_initial, lat, long)
+
+corplot = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, count_burn, cbi_initial, cbi_reburn)
+```
+
+Plot correlations
+```{r}
+library(GGally)
+library(corrplot)
+
+corrplot(cor(weather),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(clim_topo),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(firehist),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(corplot),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+# ggpairs(weather, ggplot2::aes(colour=ecoregion))
+# ggpairs(weather)
+# ggpairs(clim_topo)
+# ggpairs(firehist)
+
+#strongest correlations between weather variables, fuels variables, and lat/long
+#> selected precip and temp over AET and PRISM_vpd, and erc over fm100/1000
+```
+
+
+
+
+
+### Fit separate models for each ecoregion and scale predictors
+
+```{r}
+#scale numeric predictors for model fit - don't scale time between t or cbi or erc percentiles to maintain interpretation
+preds_2scale = c("heat_load", "PRISM_tmea", "PRISM_ppt_", "TPI_1024", "fm100_02_2", "th_02_21", "vpd_02_21", "erc_02_21", "PRISM_vpdm", "AET", "fm1000_02_", "ndvi", "shrub_rebrn", "tree_reburn", "afg_rebrn", "pfg_rebrn")
+
+data_thin = data.frame(data_thin)
+
+scale_df = function(df){
+  data_scale = scale(df[(names(df) %in% preds_2scale)], scale = TRUE, center = TRUE)
+  data_scale_all = cbind(data_scale, df[!(names(df) %in% preds_2scale)])
+  return(data_scale_all)
+}
+
+#create new dfs for each ecoregion and scale each ecoregion separately 
+data_lowmod_ca = data_thin %>% filter(ecoregion == "California Coast") %>%
+  scale_df()
+
+data_lowmod_nm = data_thin %>% filter(ecoregion == "Northern Mountains") %>%
+  scale_df()
+
+data_lowmod_sw = data_thin %>% filter(ecoregion == "Southwest") %>%
+  scale_df()
+
+data_lowmod_wm = data_thin %>% filter(ecoregion == "Western Mountains") %>%
+  scale_df()
+
+
+```
+
+
+
 Test for spatial autocorrelation
 ```{r}
 library(ape)
-inv_dist = with(data_lowmod_sw, 1/dist(cbind(lat, long), diag = TRUE, upper = TRUE))
+inv_dist = with(data_lowmod_ca, 1/dist(cbind(lat, long), diag = TRUE, upper = TRUE))
 inv_dist = as.matrix(inv_dist)
-ape::Moran.I(data_lowmod_sw$cbi_reburn, weight = inv_dist, scaled = TRUE)
+ape::Moran.I(data_lowmod_ca$cbi_reburn, weight = inv_dist, scaled = TRUE)
 
-#observed = 0.16  - CA; 0.14 - NM; 0.23 for SW
+#observed = 0.15  - CA; 0.11 - NM; 0.17 for SW, 0.07 for wm
 # While statistically significant, there actually isn’t too much going on, though it may be enough to warrant dealing with in some fashion.
 
 ```
@@ -453,7 +436,7 @@ Model fit/selection with mgcv
 
 ```{r}
 
-gm_prism = function(df, k){
+gm = function(df, k){
   
   #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
   gamfit = bam(cbi_reburn ~ count_burn + #not logit transformed response
@@ -484,7 +467,52 @@ gm_prism = function(df, k){
                  # ti(time_betwe, by = TPI_1024, k = k, bs = "cs") +
                  # ti(time_betwe, by = count_points_reburn, k = k, bs = "cs") +
                  #account for spatial autocorrelation
-                 # s(long, lat, bs = 'gp', k = 100, m = 2), #Using the Gaussian process smooth produces a result that is akin to kriging. There are many other features to play with, as well as other bases that would be applicable -# 
+                 # s(long, lat, bs = 'gp', k = 100, m = 2), #Using the Gaussian process smooth produces a result that is akin to kriging. There are many other features to play with, as well as other bases that would be applicable -#
+               # correlation = corSpatial(form = ~ long + lat, type = 'gaussian')  # https://m-clark.github.io/generalized-additive-models/appendix.html
+
+             data = df,
+             select = T,
+             gamma = 1.4,
+             method = "fREML") 
+
+  return(gamfit)
+
+}
+
+
+gm_ndvi = function(df, k){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = bam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(PRISM_ppt_, k = k, bs = "cs") +
+                  s(PRISM_tmea, k = k, bs = "cs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs") +
+                  s(ndvi, k = k, bs = "cs") +
+                  # s(ndvi, k = k, bs = "cs") +
+                  # s(tree_reburn, k = k, bs = "cs") +
+                  # ti(time_betwe, by = AET, k = k, bs = "cs") +
+                  ti(time_betwe, by = PRISM_ppt_, k = k, bs = "cs") +
+                  ti(time_betwe, by = PRISM_tmea, k = k, bs = "cs") +
+                  ti(time_betwe, by = vpd_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = vs_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = erc_perc, k = k, bs = "cs") +
+                 ti(time_betwe, by = cbi_initial, k = k, bs = "cs"),
+                 
+                 # ti(time_betwe, by = TPI_1024, k = k, bs = "cs") +
+                 # ti(time_betwe, by = count_points_reburn, k = k, bs = "cs") +
+                 #account for spatial autocorrelation
+                 # s(long, lat, bs = 'gp', k = 100, m = 2), #Using the Gaussian process smooth produces a result that is akin to kriging. There are many other features to play with, as well as other bases that would be applicable -#
                # correlation = corSpatial(form = ~ long + lat, type = 'gaussian')  # https://m-clark.github.io/generalized-additive-models/appendix.html
 
              data = df,
@@ -503,13 +531,26 @@ gm_prism = function(df, k){
 Examine model fits
 ```{r}
 #not aet, includes prism temp/precip
-fit3_ca = gm_prism(thin_ca, k = 5)
-fit3_nm = gm_prism(thin_nm, k = 5)
-fit3_sw = gm_prism(thin_sw, k = 5)
-fit3_wm = gm_prism(thin_wm, k = 5)
+fit3_ca = gm(data_lowmod_ca, k = 5)
+fit3_nm = gm(data_lowmod_nm, k = 5)
+fit3_sw = gm(data_lowmod_sw, k = 5)
+fit3_wm = gm(data_lowmod_wm, k = 5)
+
+#with ndvi
+fit4_ca = gm_ndvi(data_lowmod_ca, k = 5)
+fit4_nm = gm_ndvi(data_lowmod_nm, k = 5)
+fit4_sw = gm_ndvi(data_lowmod_sw, k = 5)
+fit4_wm = gm_ndvi(data_lowmod_wm, k = 5)
 
 # plot(fit3_ca)
 # plot(fit3_nm)
+summary(fit3_ca)
+
+#compare models 
+anova(fit3_ca, fit4_ca, test = "Chisq") #sig, increases % dev explained by 1, from 37.5 to 38.5
+anova(fit3_nm, fit4_nm, test = "Chisq") #sig, increases % dev explained by 4, from 32.8 to 33.2
+anova(fit3_sw, fit4_sw, test = "Chisq") #sig, increases % dev explained by 4, from 25.1 to 28.9
+anova(fit3_wm, fit4_wm, test = "Chisq") #sig, increases % dev explained by 4, from 22.7 to 24.3
 ```
 
 
@@ -521,6 +562,10 @@ gam.check(fit3_nm)
 gam.check(fit3_sw) 
 gam.check(fit3_nm)
 #- still some significance in the residuals tests, but edf is below 6 so there are likely other issues with the models? thinning helped this a bit
+
+
+#including lat long did not improve the residuals and it is highly correlated with other predictors, so leaving out
+
 
 #check for concurvity - non-linearly related variables; Ignore interactions? 
 concurv_ca = concurvity(fit3_ca, full = FALSE)  
@@ -543,10 +588,10 @@ project_func = function(df){
   return(spdf)
 }
 
-ca_proj = project_func(thin_ca)
-sw_proj = project_func(thin_sw)
-nm_proj = project_func(thin_nm)
-wm_proj = project_func(thin_wm)
+ca_proj = project_func(data_lowmod_ca)
+sw_proj = project_func(data_lowmod_sw)
+nm_proj = project_func(data_lowmod_nm)
+wm_proj = project_func(data_lowmod_wm)
 
 vca = plot(variogram(resid_ca~1, data=ca_proj, cutoff = 5), main = "cali coast")
 vnm = plot(variogram(resid_nm~1, data=nm_proj, cutoff = 5), main = "northern mnts")
@@ -582,151 +627,10 @@ plot_resids_cov(data_lowmod_wm)
 #covaraite/residual relationships look good! 
 ```
 
-CBI predictions
-```{r}
-library(tidymv)
-
-cbi_preds_func = function(gam_fit, df){
-  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = 0, PRISM_tmea = 0, cbi_initial =c(0.51, 1.5, 2.49), time_betwe = seq(0.1, 2.7, by = 0.1), erc_perc = .9, vs_perc = .5, vpd_perc = .9, heat_load = 0, TPI_1024 = 0, count_burn = 2, long = mean(df$long), lat = mean(df$lat))) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
-  return(preds)
-}
-
-ca_preds = cbi_preds_func(fit3_ca, thin_ca)
-sw_preds = cbi_preds_func(fit3_sw, thin_sw)
-nm_preds = cbi_preds_func(fit3_nm, thin_nm)
-wm_preds = cbi_preds_func(fit3_wm, thin_wm)
-
-
-plot_preds = function(preds){
-  
-  plot = preds %>%
-  ggplot(aes(time_betwe, fit)) +
-    geom_smooth_ci(cbi_initial, size = 1.05, legend = NA)+
-    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
-    scale_linetype_manual(values =c(1,2,3))+
-  theme_bw(13) +
-  theme(legend.title = element_blank())
-  ylim(0.5, 3)
-  
-  return(plot)
-}
-
-pca = plot_preds(ca_preds) + ggtitle("California coast")
-psw = plot_preds(sw_preds) + ggtitle("Southwest")
-pnm = plot_preds(nm_preds) + ggtitle("Northern Mountains")
-pwm = plot_preds(wm_preds) + ggtitle("Western Mountains")
-
-grid.arrange(pca, pwm, psw, pnm, nrow= 2, ncol=2)# 
-```
-
-
-wind speed predictions
-```{r}
-#predict for different wind speeds
-vs_preds_func = function(gam_fit, df){
-  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = 0, PRISM_tmea = 0, cbi_initial= 1.5, time_betwe = seq(0.1, 3.6, by = 0.1), erc_perc = .9, vs_perc = c(0.3, 0.6, 0.95), vpd_perc = .9, heat_load = 0, TPI_1024 = 0, count_burn = 2, long = mean(df$long), lat = mean(df$lat))) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
-  return(preds)
-}
-
-ca_preds = vs_preds_func(fit3_ca, thin_ca)
-sw_preds = vs_preds_func(fit3_sw, thin_sw)
-nm_preds = vs_preds_func(fit3_nm, thin_nm)
-wm_preds = vs_preds_func(fit3_wm, thin_wm)
-
-
-plot_preds = function(preds){
-  
-  plot = preds %>%
-  ggplot(aes(time_betwe, fit)) +
-    geom_smooth_ci(vs_perc, size = 1.05, legend = NA)+
-    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
-    scale_linetype_manual(values =c(1,2,3))+
-  theme_bw(13) +
-  theme(legend.title = element_blank())
-  ylim(0.5, 3)
-  
-  return(plot)
-}
-
-library(gridExtra)
-pca = plot_preds(ca_preds) + ggtitle("California coast")
-psw = plot_preds(sw_preds) + ggtitle("Southwest")
-pnm = plot_preds(nm_preds) + ggtitle("Northern Mountains")
-pwm = plot_preds(wm_preds) + ggtitle("Western Mountains")
-
-grid.arrange(pca, psw, pnm, pwm, nrow= 2, ncol=2)
-```
-
-precip predictions
-```{r}
-#predict for different wind speeds
-ppt_preds_func = function(gam_fit, df){
-  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = c(round(quantile(df$PRISM_ppt_, 0.20),2), round(quantile(df$PRISM_ppt_, 0.5),2), round(quantile(df$PRISM_ppt_, 0.90),2)), PRISM_tmea = 0, cbi_initial= 1.5, time_betwe = seq(0.1, 3.6, by = 0.1), erc_perc = .9, vs_perc = .5, vpd_perc = .9, heat_load = 0, TPI_1024 = 0, count_burn = 2, long = mean(df$long), lat = mean(df$lat))) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
-  return(preds)
-}
-
-ca_preds = ppt_preds_func(fit3_ca, thin_ca)
-sw_preds = ppt_preds_func(fit3_sw, thin_sw)
-nm_preds = ppt_preds_func(fit3_nm, thin_nm)
-wm_preds = ppt_preds_func(fit3_wm, thin_wm)
-
-
-plot_preds = function(preds){
-  
-  plot = preds %>%
-  ggplot(aes(time_betwe, fit)) +
-    geom_smooth_ci(PRISM_ppt_, size = 1.05, legend = NA)+
-    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
-    scale_linetype_manual(values =c(1,2,3))+
-  theme_bw(13) +
-  theme(legend.title = element_blank())
-  ylim(0.5, 3)
-  
-  return(plot)
-}
-
-pca = plot_preds(ca_preds) + ggtitle("California coast")
-psw = plot_preds(sw_preds) + ggtitle("Southwest")
-pnm = plot_preds(nm_preds) + ggtitle("Northern Mountains")
-pwm = plot_preds(wm_preds) + ggtitle("Western Mountains")
-
-grid.arrange(pca, psw, pnm, pwm, nrow= 2, ncol=2)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-```{r}
-vis.gam(fit3_ca, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("california coast")
-vis.gam(fit3_nm, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("northern mountains")
-vis.gam(fit3_wm, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("western mountains")
-vis.gam(fit3_sw, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("southwest")
-
-vis.gam(fit3_ca, view=c('time_betwe', 'count_points_reburn'), n.grid=50, theta=50, phi=32, zlab="", too.far=0.1)+title("california coast")
-vis.gam(fit3_nm, view=c('time_betwe', 'count_points_reburn'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("northern mountains")
-vis.gam(fit3_wm, view=c('time_betwe', 'count_points_reburn'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("western mountains")
-vis.gam(fit3_sw, view=c('time_betwe', 'count_points_reburn'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("southwest")
-
-summary(fit3_ca)
-summary(fit3_nm)
-summary(fit3_sw) #*timexsize interaction
-summary(fit3_wm) #*timexsize interaction
-
-cor(data_lowmod_wm$erc_perc, data_lowmod_wm$count_points_reburn)
-```
 
 ### Predict
 
->how to determine extreme vs. normal fire weather? using our data or local values? What cut offs to use? Should these be ecoregion specific?
-
+Explore predictor space to determine values for prediction 
 ```{r}
 #create prediction dfs with with 3 values for weather and all values for time between
 # Explore predictor space to help determine values for weather vars 
@@ -828,6 +732,7 @@ abline(v = quantile(thin_nm$PRISM_tmea, 0.75), h = quantile(thin_nm$PRISM_ppt_, 
 ```
 
 
+Weather predictions
 ```{r}
 #prediction df with most variables set to mean = 0
 preds_dfw_func = function(df, fit){
