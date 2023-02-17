@@ -748,13 +748,13 @@ preds_dfw_func = function(df, fit, vpd_mean, vpd_sd, erc_mean, erc_sd){
                       # AET = 0, 
                       # afg_rebrn = 0, pfg_rebrn = 0,
                       #set weather variables to 3rd quantile value by ecoregion
-                      vpd_perc = as.numeric((.97-vpd_mean)/vpd_sd),
-                      erc_perc = as.numeric((.97-erc_mean)/erc_sd),
+                      vpd_perc = as.numeric((.98-vpd_mean)/vpd_sd),
+                      erc_perc = as.numeric((.98-erc_mean)/erc_sd),
                       # vs_02_21 = quantile(df$vs_02_21, 0.95),
                       vs_perc = 0,
                       #set time between fires to full range 1-25 years
                       time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
-                      weather = "97perc")
+                      weather = "extreme")
   
   df_w90 = data.frame(count_burn = 2, #unscaled
                       PRISM_ppt_ = 0, 
@@ -762,11 +762,11 @@ preds_dfw_func = function(df, fit, vpd_mean, vpd_sd, erc_mean, erc_sd){
                       cbi_initial = 0, 
                       heat_load = 0, 
                       TPI_1024 = 0,
-                      vpd_perc = as.numeric((.90-vpd_mean)/vpd_sd),
-                      erc_perc = as.numeric((.90-erc_mean)/erc_sd),
+                      vpd_perc = as.numeric((.95-vpd_mean)/vpd_sd),
+                      erc_perc = as.numeric((.95-erc_mean)/erc_sd),
                       vs_perc = 0,
                       time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
-                      weather = "90perc")
+                      weather = "veryhigh")
 
   df_w80 = data.frame(count_burn = 2, #unscaled
                       PRISM_ppt_ = 0, 
@@ -774,11 +774,11 @@ preds_dfw_func = function(df, fit, vpd_mean, vpd_sd, erc_mean, erc_sd){
                       cbi_initial = 0, 
                       heat_load = 0, 
                       TPI_1024 = 0,
-                      vpd_perc = as.numeric((.80-vpd_mean)/vpd_sd),
-                      erc_perc = as.numeric((.80-erc_mean)/erc_sd),
+                      vpd_perc = as.numeric((.85-vpd_mean)/vpd_sd),
+                      erc_perc = as.numeric((.85-erc_mean)/erc_sd),
                       vs_perc = 0,
-                      time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
-                      weather = "80perc")
+                      time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .01),
+                      weather = "high")
   
   data_w = rbind(df_w97, df_w80, df_w90)
   
@@ -819,16 +819,43 @@ preds_w_wm <- preds_dfw_func(df = data_lowmod_wm, fit = fit_wm,
                              erc_sd = unscale_df[4, 'erc_perc_sd'])
 
 #add in unscaled time_between for plotting
-preds_w_ca$time_betwe_unscale = (preds_w_ca$time_betwe * as.numeric(unscale_df[1, "timebetwe_sd"])) + as.numeric(unscale_df[1, "timebetwe_mean"])
+preds_w_ca$time_betwe_unscale = round((preds_w_ca$time_betwe * as.numeric(unscale_df[1, "timebetwe_sd"])) + as.numeric(unscale_df[1, "timebetwe_mean"]),1)
 
-preds_w_nm$time_betwe_unscale = (preds_w_nm$time_betwe * as.numeric(unscale_df[2, "timebetwe_sd"])) + as.numeric(unscale_df[2, "timebetwe_mean"])
+preds_w_nm$time_betwe_unscale = round((preds_w_nm$time_betwe * as.numeric(unscale_df[2, "timebetwe_sd"])) + as.numeric(unscale_df[2, "timebetwe_mean"]),1)
 
-preds_w_sw$time_betwe_unscale = (preds_w_sw$time_betwe * as.numeric(unscale_df[3, "timebetwe_sd"])) + as.numeric(unscale_df[3, "timebetwe_mean"])
+preds_w_sw$time_betwe_unscale = round((preds_w_sw$time_betwe * as.numeric(unscale_df[3, "timebetwe_sd"])) + as.numeric(unscale_df[3, "timebetwe_mean"]),1)
 
-preds_w_wm$time_betwe_unscale = (preds_w_wm$time_betwe * as.numeric(unscale_df[4, "timebetwe_sd"])) + as.numeric(unscale_df[4, "timebetwe_mean"])
+preds_w_wm$time_betwe_unscale = round((preds_w_wm$time_betwe * as.numeric(unscale_df[4, "timebetwe_sd"])) + as.numeric(unscale_df[4, "timebetwe_mean"]),1)
 ```
 
+Determine values for truncating data
+```{r}
+#create new variables for each interactino category
+bins = data_thin %>%
+  mutate(cbi_bins = case_when(cbi_initial <= 1 ~ "lowsev",
+                             cbi_initial > 1 ~ "modsev"), 
+         weather_bins = case_when(erc_perc > .97 & vpd_perc > .97 ~ "extreme",
+                             erc_perc <= .9 & vpd_perc <= .9 ~ "high",
+                             erc_perc > .9 & vpd_perc > .9 &
+                              erc_perc <= .97 & vpd_perc <= .97 ~ "veryhigh"),
+         time_fact = as.factor(time_betwe))
 
+weather_bins = bins %>% group_by(ecoregion, weather_bins) %>%
+  summarise(count = n(),
+            min_time = min(time_betwe),
+            max_time = max(time_betwe))
+
+cbi_bins = bins %>% group_by(ecoregion, cbi_bins) %>%
+  summarise(count = n(),
+            min_time = min(time_betwe),
+            max_time = max(time_betwe))
+```
+
+Truncate predictor data frames
+```{r}
+preds_w_ca_trunc = preds_w_ca %>% groupby(filter()
+
+```
 
 climate predictions
 ```{r}
@@ -969,12 +996,7 @@ library(patchwork)
 pca + psw + pnm + pwm + 
   plot_layout(ncol = 2)
 ```
-Determine values for truncating data
-```{r}
-data_thin %>% 
-  mutate(cbi_bins = cut(x, breaks = c(0,2,6,10) )
 
-```
 
 plot interaction between climate/ productivity and time between fires
 ```{r}
