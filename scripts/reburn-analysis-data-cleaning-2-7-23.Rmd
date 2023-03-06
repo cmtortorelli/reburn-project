@@ -1,0 +1,273 @@
+---
+title: "Reburn analysis"
+author: "CT"
+date: "2022-11-30"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+This script cleans data for reburn analyses.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(randomForest)
+library(ranger) #a faster version of the RF algorithm
+# library(pdp)# for partial dependence plots (PDPs)
+
+library(tidyverse)
+library(here)
+library(sp)
+library(sf)
+library(terra)
+library(raster)
+
+library(mgcv)
+library(tidymv)
+
+library(gridExtra)
+library(BiodiversityR)
+
+
+data_dir = readLines(here("data_dir_D.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+Load reburn points for analysis
+
+```{r}
+data = st_read(datadir("prelim-outputs/points/points_for_analysis_1-13.3-23.gpkg"))  
+
+
+#add lat long coordinates to data frame
+data_wgs = st_transform(data, 4326)
+coords = data.frame(st_coordinates(data_wgs))
+
+data$lat = coords$Y
+data$long = coords$X
+
+```
+
+
+
+# Select points for analysis based on following criteria:
+
+- Not on FS land (focus analysis on forested FS land, and for management)
+- Less than 40% tree cover at time of reburn (focus analysis on forested areas)
+- second fire occurred after 2001 (limited by MODIS for day of fire weather)
+- burned at <0.5 CBI in initial or reburn fires (remove unburned areas to limit residual error where fire did not make it to a point within a fire perimeter)
+
+```{r}
+
+#remove points that... 
+data_sub = data %>% 
+  filter(tree_reburn >= 40 & #have greater than 40% tree cover at time of reburn
+           mostrecent > 2001 & #second fire occurred after 2001 (for MODIS weather data)
+           cbi_initial >= 0.5 & #burned at >0.5 CBI in initial or reburn (cni85_21) fires (remove unburned areas to limit residual error
+           cni85_21 >= 0.5) %>%
+  filter(!is.na(ecoregion)) #remove points that fall outside of our 4 ecoregions
+
+# 
+# st_write(data_sub, datadir("/prelim-outputs/points/data_sub_1-20-23.shp"))
+```
+
+Remove non-forested areas
+```{r}
+bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/unique_LF16_BPS_200_codes_thinned_reburn_data.csv"))
+
+data_sub1 = left_join(data_sub, bps_codes) %>% 
+  filter(CT_lumped_codes4 != "Non-forest" & 
+           CT_lumped_codes4 != "Shrubland/Chaparral")
+
+```
+
+add in weather percentiles
+```{r}
+#add missing data 
+#add weather percentiles for erc, vs, and vpd 
+perc_w = read_sf(datadir("prelim-outputs/points/dob_percentiles_1-12-23.gpkg"))
+
+data_sub1 = st_join(data_sub1, perc_w[,c("erc_perc","vpd_perc","vs_perc")])
+```
+
+clean data
+```{r}
+#clean data
+data_sub2 = data_sub1 %>% 
+  rename(cbi_reburn = cni85_21) %>% 
+  #remove rows where ndvi = NA (29 rows) 
+  drop_na(ndvi) %>%
+ 
+  #lump wildfire codes
+  mutate(reburn_fire_type = recode(reburn_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
+  initial_fire_type = recode(initial_fire_type, 'Unknown' = 'Wildfire', 'Wildfire Daily Fire Perimeter' = 'Wildfire', 'Wildfire Final Fire Perimeter' = 'Wildfire', 'Wildland Fire Use' = 'Wildfire'),
+  ecoregion = as.factor(ecoregion)) %>%
+
+  #remove 122 points without AET data
+  filter(AET > 0) 
+
+
+#clean up facts management data
+data_facts = data_sub2 %>%
+    #lump facts management into one variable (time since management)
+  mutate(time2manage1 = pmin(pfire_yrs2reburn, mechanical_yrs2reburn, na.rm = TRUE),
+  #set NAs to time since last fire
+        time2manage = coalesce(time2manage1, time_betwe),
+  #add logical variable for if a point was managed within 10 years of the reburn
+        postmanage10 = time2manage1 <= 10,
+        postmanage10 = coalesce(postmanage10, FALSE),
+    #add logical variable for if a point was managed within 10 years of the initial fire
+        time2manage_preburn = pmin(pfire_yrs2initial, mechanical_yrs2initial, na.rm = TRUE),
+        premanage10 = time2manage_preburn <= 10,
+        premanage10 = coalesce(premanage10, FALSE)) #set NBAs to FALSE
+
+
+  
+data_clean = data_facts %>%
+  #rescale time between to decades
+  mutate(time_betwe = time_betwe/10) %>%
+  #remove unnecessary columns
+  dplyr::select(-c(LC20_Elev_, grid_code, secondrece, max_yr_mechanical, max_yr_preburn_mechanical, max_yr_pfire, max_yr_preburn_pfire, pfire_yrs2reburn, pfire_yrs2initial, count_trt, count_trt_pfire, count_trt_mechanical, mechanical_yrs2reburn, mechanical_yrs2initial, count_trt_preburn, count_trt_preburn_mechanical, count_trt_preburn_pfire, time2manage1, time2manage_preburn)) 
+
+#write out cleaned_data
+# st_write(data_clean,datadir("prelim-outputs/points/data_clean_for_analaysis.gpkg"))
+
+#remove rows that were managed between initial and reburn (save these for a separate analysis)
+data_nomanage = data_clean %>% filter(postmanage10 == FALSE)
+
+```
+
+```{r}
+#break into low, moderate, and high initial fire severity categories
+data_low = data_nomanage %>%
+  filter(cbi_initial < 1.5)
+
+data_mod = data_nomanage %>%
+  filter(cbi_initial >= 1.5 & cbi_initial < 2.5)
+
+data_high = data_nomanage %>% 
+  filter(cbi_initial >= 2.5)
+
+data_lowmod = data_nomanage %>%
+  filter(cbi_initial < 2.5)
+
+#proportion of managed cells
+# data_clean %>% filter(cbi_initial < 2.5) %>% nrow() - nrow(data_lowmod) #477
+# 477/data_clean %>% filter(cbi_initial < 2.5) %>% nrow()
+
+```
+
+Separate by ecoregion and thin spatially 
+```{r}
+# #transform for spatial thinning
+# data_wgs = st_transform(data_lowmod, 4326)
+# 
+# # create new dfs for each ecoregion
+# data_wgs_ca = data_wgs %>% filter(ecoregion == "California Coast")
+# data_wgs_nm = data_wgs %>% filter(ecoregion == "Northern Mountains")
+# data_wgs_sw = data_wgs %>% filter(ecoregion == "Southwest")
+# data_wgs_wm = data_wgs %>% filter(ecoregion == "Western Mountains")
+# #additional subsetting for spaital thinning (cannot allocate vector for the entire wm)
+# data_wgs_wm1 = data_lowmod_wm %>% filter(lat < 41.36737 )
+# data_wgs_wm2 = data_lowmod_wm %>% filter(lat >= 41.36737 )
+# 
+# # spatial thin all ecoregions to 0.5km
+# library(spThin)
+# thin(loc.data = data_wgs_ca,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/ca"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_nm,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/nm"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_sw,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/sw"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_wm1,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm1"),
+#                verbose = TRUE)
+# 
+# thin(loc.data = data_wgs_wm2,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm2"),
+#                verbose = TRUE)
+# 
+# 
+# #rethin western mountains to get rid of a few points in the spatial overlap
+# #combine wm1 and wm2
+# thin_wm1 = read.csv(datadir("prelim-outputs/points/wm1/thinned_data_thin1.csv"))
+# thin_wm2 = read.csv(datadir("prelim-outputs/points/wm2/thinned_data_thin1.csv"))
+# thin_wm = bind_rows(thin_wm1, thin_wm2)
+# 
+# #rethin
+# thin(loc.data = thin_wm,
+#                lat.col = "lat",
+#                long.col = "long",
+#                spec.col = "ecoregion",
+#                thin.par = 0.5,
+#                reps = 3,
+#                out.dir = datadir("prelim-outputs/points/wm"),
+#                verbose = TRUE)
+
+
+```
+
+Merge data-frame with thinned locations
+```{r}
+#thin data
+
+thin_sw = read.csv(datadir("prelim-outputs/points/sw/thinned_data_thin1.csv")) %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+
+thin_nm = read.csv(datadir("prelim-outputs/points/nm/thinned_data_thin1.csv"))%>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+
+thin_ca = read.csv(datadir("prelim-outputs/points/ca/thinned_data_thin1.csv"))%>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+
+thin_wm = read.csv(datadir("prelim-outputs/points/wm/thinned_data_thin1.csv")) %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+
+data_thin = bind_rows(thin_ca, thin_wm, thin_nm, thin_sw)
+data_lowmod = data_lowmod %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+data_thin = inner_join(data_thin,data_lowmod)
+
+#write thinned data
+#write.csv(data_thin, datadir("prelim-outputs/points/thinned_data_3-6-23.csv"))
+# data_thin = read_csv(datadir("prelim-outputs/points/thinned_data_2-7-23.csv"))
+```
+
+
+
+
