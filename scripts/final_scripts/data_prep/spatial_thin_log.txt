@@ -1,0 +1,185 @@
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Tue Mar 21 16:15:11 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+162.36 134.22 297.33 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2478	2481	2485
+1	1	1
+Maximum number of records after thinning: 2485
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/ca
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/ca/thinned_data_thin1.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Tue Mar 21 16:20:13 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+64.06 52.46 117.01 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2460	2464	2465
+1	1	1
+Maximum number of records after thinning: 2465
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/nm
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/nm/thinned_data_thin1.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Tue Mar 21 16:22:14 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+9.74 6.63 16.86 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+1407	1414	1419
+1	1	1
+Maximum number of records after thinning: 1419
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/sw
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/sw/thinned_data_thin1.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Tue Mar 21 16:22:32 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 08:59:38 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+238.35 381.77 630.98 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2718	2740	2746
+1	1	1
+Maximum number of records after thinning: 2746
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Created new output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 09:13:48 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+285.8 408.89 703.7 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2452	2456	2465
+1	1	1
+Maximum number of records after thinning: 2465
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 09:29:59 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+313.2 496.61 812.3 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2335	2339
+1	2
+Maximum number of records after thinning: 2339
+Number of data.frames with max records: 2
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new_new.csv
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin2.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 09:43:38 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 09:46:51 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 3
+
+Elapsed time for thinning completion
+286.67 457.98 753.4 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+2436	2444	2454
+1	1	1
+Maximum number of records after thinning: 2454
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new_new_new.csv ' already exists. Renaming file 
+                                   to avoid overwriting.
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm/thinned_data_thin1_new_new_new.csv
+********************************************** 
+ Beginning Spatial Thinning.
+ Script Started at: Wed Mar 22 10:00:27 2023
+
+Thinning Parameter Used (in km): 0.5
+Number of replicates of thinning script: 1
+
+Elapsed time for thinning completion
+10.12 5.11 15.57 NA NA
+
+Number of data.frames per locations retained
+loc.cnt df.freq
+9957
+1
+Maximum number of records after thinning: 9957
+Number of data.frames with max records: 1
+
+**New *.csv file creation:**
+Writing new *.csv files to output directory: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm_all
+Writing file: D:/UCDavis/Reburn-project/reburn-project/data/prelim-outputs/points/wm_all/thinned_data_thin1.csv

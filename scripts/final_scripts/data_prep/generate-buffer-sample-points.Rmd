@@ -1,0 +1,95 @@
+---
+title: "sample_points"
+author: "CT"
+date: "2022-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir_D.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+This script generates and buffers sample points for the drivers of reburn severity project
+
+
+## Generate sample points
+generate sample points from fire history raster
+```{r}
+#read in rater with count of number of times each pixel burned
+burns_r = raster(datadir("/prelim-outputs/fire_history/count_burns_int.tif"))
+
+#generate 270m raster to snap to when resampling
+r270 = aggregate(burns_r, fact=9, fun=max, na.rm = TRUE)
+
+#resample to 270m
+burns_r270 = raster::resample(burns_r, r270, method = "ngb", filename = datadir("/prelim-outputs/fire_history/count_burns_resamp270m.tif"))
+
+
+#convert raster to points for only reburned areas (x > 1 time burned)
+reburn_points = rasterToPoints(burns_r270, fun=function(x){x>1}, spatial = TRUE)
+
+#write reburn points to shp
+writeOGR(obj=reburn_points, dsn=datadir("/prelim-outputs/points"), layer="reburn_points_270test", driver="ESRI Shapefile")
+
+# plot(reburn_points[1:100000,])
+```
+
+#### Buffer reburned area 
+so that we don't have any sample points within 300m of edge to limit edge effects and spatial data inconsistencies
+
+Buffer polygons inside 300m
+```{r}
+#get reburned area - did this in arc for faster processing: 
+#> converted count_burns_int.tif to polygons %>% removed areas that only burned once
+
+reburn_poly = st_read(datadir("/prelim-outputs/fire_history/reburn_poly.shp"))
+
+# buffer size = 300m coordinates inward
+buffer_size <- (-300)
+
+# compute buffered polygons
+perims_buffered <- st_buffer(reburn_poly, buffer_size) 
+
+# remove degenerate polygons
+perims_remaining <- perims_buffered[!st_is_empty(perims_buffered),]
+
+#write perims_buffer
+st_write(perims_remaining, datadir("prelim-outputs/buffered_perims/buffered_perims.shp"))
+# perims_remaining = st_read(datadir("prelim-outputs/buffered_perims/buffered_perims.shp"))
+```
+
+Extract points that fall within the buffer to new points dataset
+```{r}
+reburn_points = st_read(datadir("prelim-outputs/points/reburn_points_270.shp"))
+
+# plot(perims[2,1])
+# plot(perims_remaining[2,1])
+
+#keep only points that fall in buffered perims
+points_buff = st_intersects(reburn_points, perims_remaining)
+points_buff_include = lengths(points_buff) > 0 
+points_buff_include = reburn_points[points_buff_include,]
+  
+  
+#write sample points
+st_write(points_buff_include, datadir("prelim-outputs/points/sample_points_buff.shp"))
+
+```
+
+
