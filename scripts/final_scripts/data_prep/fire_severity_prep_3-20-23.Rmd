@@ -1,0 +1,80 @@
+---
+title: "Fire_severity_prep"
+author: "CT"
+date: "2022-10-03"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(here)
+library(rgdal)
+library(rgeos)
+library(sp)
+library(sf)
+library(readxl)
+library(terra)
+library(raster) # for the rasterize function in this package
+library(tictoc) # for simple tracking of computation time
+
+data_dir = readLines(here("data_dir_D.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+This script preps severity CBI data from GEE for analysis by creating annual CBI mosiac raster layers 1985-2021
+
+
+### Create raster layer for each fire year (1985-2021)
+
+create cbi raster for each fire year
+
+test for one fire year
+```{r}
+#get files
+filelist <- list.files(path = datadir("/raw-data/cbi-GEE/2021_updated_shift"), pattern='.tif$', all.files=TRUE, full.names=TRUE)
+
+#convert to raster
+rast.list <- lapply(1:length(filelist), function(x) {raster(filelist[x])})
+
+rast.list$fun <- max
+tic()
+rast.mosaic <- do.call(mosaic,rast.list) 
+writeRaster(rast.mosaic, datadir("/raw-data/cbi-GEE/cbi_2021_updated_shift.tif"), overwrite = TRUE)
+toc()
+```
+
+Apply function to all fire years
+```{r}
+#loop through all folders
+years = as.character(1987:2021)
+
+  for(yr in years){
+    
+    #get file list
+    filelist <- list.files(paste(
+      here(),
+      "/data/raw-data/cbi-GEE/",
+      yr, "/",
+      sep = ""), 
+      pattern='.tif$',
+      all.files=TRUE, full.names=TRUE)
+    
+    #convert to raster
+    rast.list <- lapply(1:length(filelist), function(x) {raster(filelist[x])})
+    
+    rast.list$fun <- max
+    
+    #mosiac raster
+    tic()
+    rast.mosaic <- do.call(mosaic,rast.list)
+    
+    #write raster 
+    writeRaster(rast.mosaic, paste(datadir(""),"/raw-data/cbi-GEE/cbi_", yr, ".tif", sep = ""))
+    toc()
+    }
+
+```
+

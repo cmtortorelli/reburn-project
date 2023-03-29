@@ -75,6 +75,14 @@ sum_stat_tbl = data_thin %>% gather(var, value, c(time_betwe, cbi_initial, cbi_r
             upper.x = round(quantile(value, probs = 0.75),2))
 
 summary(as.factor(data_thin$time_betwe))
+
+#summarise high severity
+high_sev = data_thin %>% filter(cbi_reburn >2.5) %>% group_by(ecoregion) %>% summarise(highsev_count = n())
+
+ecoregion_sum = data_thin %>% group_by(ecoregion) %>%
+  summarise(n = n())
+
+high_sev$highsev_perc = high_sev$highsev_count/ecoregion_sum$n *100
 ```
 
 ```{r}
@@ -275,18 +283,49 @@ vegplot = data_thin %>% group_by(CT_lumped_codes4, ecoregion) %>%
   ggplot(aes(x = n, y = ecoregion, fill = CT_lumped_codes4))+
   geom_bar(position = "fill", stat = "identity")+
   theme_bw(13)+
-  scale_fill_manual(values = pal3, name = "forest type")+
+  scale_fill_manual(values = pal4, name = "forest type")+
   ylab("")+
   xlab("")+
   theme(legend.position = "bottom", legend.title=element_blank())+
-  guides(fill = guide_legend(nrow = 5))
+  guides(fill = guide_legend(nrow = 3))
   
 veg_table = data_thin %>% dplyr::select(CT_lumped_codes4, BPS_NAME) %>% distinct() %>% arrange(CT_lumped_codes4, BPS_NAME)
+```
+
+```{r}
+pal4 = c("#FFD662", "#244630", "#cb8c04","#46895D", "#B4C692", "#AA4731", "#4E0012", "#2A9D8F", "#264653")
+
+#, "#264653","#2A9D8F","#883c0c", "#dbd053")
+#climate space plot
+# library(ggforce)
+(vegclim_plot = slice(data_thin, sample(1:n())) %>% #shuffle rows for better visualization
+  ggplot(aes(color = CT_lumped_codes4, x = PRISM_tmea, y = PRISM_ppt_)) +
+  geom_point(alpha = .5, size = 1.5)+
+  # geom_smooth()+
+# 95% confidence level for a multivariate t-distribution
+  theme_bw(13)+
+  ylab("Precipitation (mm)") +
+  xlab(expression("Temperature " ( degree*C)))+
+  stat_ellipse(aes(linetype = ecoregion, x = PRISM_tmea, y = PRISM_ppt_), size = 1, type = "t", color = "black", show.legend = FALSE) +
+
+  scale_linetype_manual(values = c(1,1,1,1))+
+  scale_color_manual(values = pal4) + 
+  theme(legend.position="NULL", legend.title=element_blank())+
+  guides(colour = guide_legend(nrow = 2))+
+  guides(color = guide_legend(override.aes = list(size = 3)))+
+  annotate("text", x = 2, y = 300, label = "Northern Mountains", size = 4)+
+  annotate("text", x = 17, y = 350, label = "California Coast", size = 4)+
+  annotate("text", x = 15.5, y = 2700, label = "Western Mountains", size = 4)+
+  annotate("text", x = 8.8, y = 250, label = "Southwest", size = 4)
+)
+
+
 
 #save plot
-clim_plot + vegplot + plot_annotation(tag_levels = 'a')
+(vegclim_plot + theme(legend.position = "none")) + vegplot + 
+  plot_annotation(tag_levels = 'a') + plot_layout(guides = "auto")
 
-ggsave(datadir("figures/ecoregion_overview.png"), width = 10, height = 6)
+# ggsave(datadir("figures/ecoregion_overview2.svg"), width = 11, height = 6)
 ```
 
 ### Explore correlations between variables
@@ -424,7 +463,8 @@ fit_ca = gam(cbi_reburn ~ count_burn +
              gamma = 1.4,
              method = "REML") 
 
-fit_nm = gam(cbi_reburn ~ count_burn + 
+fit_nm = gam(cbi_reburn ~ count_burn +
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
                   s(PRISM_ppt_, k = 5, bs = "cs") +
                   s(PRISM_tmea, k = 5, bs = "cs") +
                   s(cbi_initial, k = 5, bs = "cs") +
@@ -439,7 +479,7 @@ fit_nm = gam(cbi_reburn ~ count_burn +
                   ti(time_betwe, by = vpd_perc, k = 5, bs = "cs") +
                   ti(time_betwe, by = vs_perc, k = 5, bs = "cs") +
                   ti(time_betwe, by = erc_perc, k = 5, bs = "cs") +
-                  ti(time_betwe, by = cbi_initial, k = 5, bs = "cs"),
+                  ti(time_betwe, by = erc_perc, k = 5, bs = "cs"),
              data = data_lowmod_nm,
              select = T,
              gamma = 1.4,
@@ -598,6 +638,17 @@ texreg(list(fit_ca,fit_nm,fit_sw, fit_wm),
        model.names=c("California Coast","Northern Mountains","Southwest", "Western Mountains"))
 
 
+```
+
+visualize interactions
+```{r}
+library(mgcViz)
+library(rgl)
+
+plot(fit_ca)
+plot(fit_nm)
+plot(fit_sw)
+plot(fit_wm)
 ```
 
 
@@ -904,6 +955,7 @@ preds_cbi_sw$time_betwe_unscale = (preds_cbi_sw$time_betwe * as.numeric(unscale_
 preds_cbi_wm$time_betwe_unscale = (preds_cbi_wm$time_betwe * as.numeric(unscale_df[4, "timebetwe_sd"])) + as.numeric(unscale_df[4, "timebetwe_mean"])
 ```
 
+
 climate predictions
 ```{r}
 # #find west wide climate quantiles
@@ -972,6 +1024,24 @@ preds_c_nm$time_betwe_unscale = (preds_c_nm$time_betwe * as.numeric(unscale_df[2
 preds_c_sw$time_betwe_unscale = (preds_c_sw$time_betwe * as.numeric(unscale_df[3, "timebetwe_sd"])) + as.numeric(unscale_df[3, "timebetwe_mean"])
 
 preds_c_wm$time_betwe_unscale = (preds_c_wm$time_betwe * as.numeric(unscale_df[4, "timebetwe_sd"])) + as.numeric(unscale_df[4, "timebetwe_mean"])
+```
+
+Exploring weird trend with cool wet climate in the NM
+```{r}
+ggplot(data = data_lowmod_nm, aes(x = PRISM_tmea, y = PRISM_ppt_)) +
+  geom_point()+
+  geom_vline(xintercept = quantile(data_lowmod_nm$PRISM_tmea, .25))+
+  geom_hline(yintercept = quantile(data_lowmod_nm$PRISM_ppt_, .75))
+
+ggplot(data = data_lowmod_nm, aes(x = PRISM_tmea, y = cbi_reburn)) +
+  geom_point()+
+  geom_smooth()+
+  geom_vline(xintercept = quantile(data_lowmod_nm$PRISM_tmea, .25))
+
+ggplot(data = data_lowmod_nm, aes(x = PRISM_ppt_, y = cbi_reburn)) +
+  geom_point()+
+  geom_smooth()+
+  geom_vline(xintercept = quantile(data_lowmod_nm$PRISM_ppt_, .75))
 ```
 
 

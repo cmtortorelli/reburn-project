@@ -448,6 +448,8 @@ data_clean = data_facts %>%
 data_nomanage = data_clean %>% filter(postmanage10 == FALSE)
 
 st_write(data_nomanage, datadir("prelim-outputs/points/data_nomanage_3-21-23.gpkg"))
+
+# data_nomanage = st_read(datadir("prelim-outputs/points/data_nomanage_3-21-23.gpkg"))
 ```
 
 ### Divide data into intiial fire severity categories
