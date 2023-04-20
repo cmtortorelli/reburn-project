@@ -1,0 +1,1360 @@
+---
+title: "Reburn analysis"
+author: "CT"
+date: "2022-11-30"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+This script analyzes data for reburn analyses.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(randomForest)
+library(ranger) #a faster version of the RF algorithm
+# library(pdp)# for partial dependence plots (PDPs)
+
+library(tidyverse)
+library(here)
+library(sp)
+library(sf)
+library(terra)
+library(raster)
+
+library(mgcv)
+library(tidymv)
+
+library(gridExtra)
+library(BiodiversityR)
+
+
+data_dir = readLines(here("data_dir_D.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+Load reburn poitns with low/moderate initial CBI for analysis
+
+```{r}
+data_thin = read_csv(datadir("prelim-outputs/points/thinned_data_2-7-23.csv"))
+```
+
+## Explore data
+
+summary stats
+```{r}
+
+count_unique_reburns = data_thin %>%
+  group_by(initial_fireID, reburn_fireID, ecoregion) %>%
+  summarise(n = n()) %>%
+  group_by(ecoregion) %>%
+  summarise(n = n())
+
+#count sample points
+data_thin %>%
+  group_by(ecoregion) %>%
+  summarise(n = n()) 
+nrow(data_thin)
+
+#summary stats
+sum_stat_tbl = data_thin %>% gather(var, value, c(time_betwe, cbi_initial, cbi_reburn)) %>%
+  group_by(var, ecoregion) %>%
+  summarise(mean = round(mean(value),2),
+            SD = round(sd(value),2),
+            median = round(quantile(value, probs = 0.5),2),
+            lower.x = round(quantile(value, probs = 0.25),2),
+            upper.x = round(quantile(value, probs = 0.75),2))
+
+summary(as.factor(data_thin$time_betwe))
+```
+
+```{r}
+#ecoregion pallets 
+pal1 = c("#264653","#2A9D8F","#dbd053","#6a0136")
+pal2 = c("#264653","#2A9D8F","#883c0c", "#dbd053")
+
+library(ggridges)
+#climate space
+ggplot(data = data_thin, aes(color = ecoregion, x = PRISM_tmea, y = PRISM_ppt_)) +
+  geom_point(alpha = .2)+
+  stat_ellipse(size = 1, type = "t")+ # 95% confidence level for a multivariate t-distribution
+  theme_bw(13)+
+  ylab("Precipitation (mm)") +
+  xlab(expression("Temperature " ( degree*C)))+
+  scale_color_manual(values = pal2)
+
+#time between
+time_hist = ggplot(data = data_thin, aes(fill = ecoregion, x = time_betwe*10)) +
+  geom_histogram(bins = 20)+
+  theme_bw(13)+
+  xlab("time between initial fire and reburn") +
+  scale_fill_manual(values = pal2)+
+  facet_wrap(~ ecoregion)+
+      theme(legend.position = "none")
+
+#raincloud plot
+library(ggforce)
+library(ggdist)
+
+time_plot = data_thin %>% 
+    group_by(initial_fireID, reburn_fireID, ecoregion) %>%
+    summarise(time_betwe = mean(time_betwe)) %>%
+    ggplot(aes(x = time_betwe*10, y = ecoregion, fill = ecoregion, color = ecoregion)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA) + 
+  geom_point(size = 1, alpha = .05,
+    position = position_jitter(seed = 1, width = .2, height = .2))  +
+    geom_boxplot(width = .15, outlier.shape = NA, fill = NA, color = "black", size = 0.5) +
+  xlab("Years between initial fire and reburn") +
+  ylab("")+
+  scale_fill_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+  scale_color_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+      theme_bw(13)+
+      theme(legend.position = "none")
+
+
+#initial cbi
+initial_hist = ggplot(data = data_thin, aes(fill = ecoregion, x = cbi_initial)) +
+  geom_histogram()+
+  theme_bw(13)+
+  xlab("Initial CBI") +
+      ylab("")+
+  scale_fill_manual(values = pal2)+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5))+
+  facet_wrap(~ecoregion)+
+        theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")
+
+(icbi_plot = ggplot(data_thin, aes(x = cbi_initial, y = ecoregion, 
+                                   fill = ecoregion, color = ecoregion)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA) + 
+  geom_point(size = 1, alpha = .05,
+    position = position_jitter(seed = 1, height = .15))  +
+    geom_boxplot(width = .15, outlier.shape = NA, fill = NA, color = "black", size = 0.5) +
+  xlab("Initial fire CBI") +
+  ylab("")+
+  scale_fill_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+  scale_color_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+  theme_bw(13)+
+        ylab("")+
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5)))
+
+
+#reburn cbi
+reburn_hist = ggplot(data = data_thin, aes(fill = ecoregion, x = cbi_reburn)) +
+  geom_histogram()+
+  theme_bw(13)+
+  xlab("Reburn CBI") +
+    ylab("")+
+  scale_fill_manual(values = pal2)+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5))+
+  facet_wrap(~ecoregion)+
+    theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+
+#raincloud plot
+(rcbi_plot = ggplot(data_thin, aes(x = cbi_reburn, y = ecoregion, 
+                                   fill = ecoregion, color = ecoregion)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA) + 
+  geom_point(size = 1, alpha = .05,
+    position = position_jitter(seed = 1, height = .15))  +
+    geom_boxplot(width = .15, outlier.shape = NA, fill = NA, color = "black", size = 0.5) +
+  xlab("Reburn CBI") +
+  ylab("")+
+  scale_fill_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+  scale_color_manual(values = c("#264653","#2A9D8F","#883c0c", "#dbd053"))+
+  theme_bw(13)+
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")+
+  scale_x_continuous(breaks = c(0.51, 1, 1.5, 2, 2.5,3)))
+
+library(patchwork)
+time_plot + icbi_plot + rcbi_plot
+
+time_hist + initial_hist + reburn_hist
+``` 
+
+Explore vegetation
+```{r}
+data_thin %>% group_by(CT_lumped_codes3) %>% summarise(n = n())
+
+pal3 = c("#46895D", "#244630", "#A06C18", "#883C0C", "#B4C692", "#E9C46A", "#4F3511", "#2A9D8F", "#264653")
+data_thin %>% group_by(CT_lumped_codes3, ecoregion) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x = n, y = ecoregion, fill = CT_lumped_codes3))+
+  geom_bar(position = "fill", stat = "identity")+
+  theme_bw(13)+
+  scale_fill_manual(values = pal3, name = "Biophysical Setting")+
+  ylab("")+
+  xlab("")
+  
+veg_table = data_thin %>% dplyr::select(CT_lumped_codes3, BPS_NAME) %>% distinct() %>% arrange(CT_lumped_codes3, BPS_NAME)
+```
+
+### Explore correlations between variables
+```{r}
+library(purrr)
+
+#keep only numeric variables
+data_num = data_thin %>%
+  keep(is.numeric)
+
+# library(PerformanceAnalytics)
+# cor(data_num, method = "pearson", use = "complete.obs")
+# chart.Correlation(cor(data_num))
+
+weather = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, erc_02_21, vs_02_21, vpd_02_21, th_02_21, fm1000_02_, fm100_02_2, cbi_reburn, lat, long)
+
+clim_topo = data_thin %>% data.frame() %>%
+  dplyr::select(heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, lat, long)
+
+firehist = data_thin %>% data.frame() %>%
+  dplyr::select(time_betwe, count_burn, cbi_reburn, cbi_initial, lat, long)
+
+corplot = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, count_burn, cbi_initial, cbi_reburn)
+```
+
+Plot correlations
+```{r}
+library(GGally)
+library(corrplot)
+
+corrplot(cor(weather),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(clim_topo),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(firehist),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(corplot),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+# ggpairs(weather, ggplot2::aes(colour=ecoregion))
+# ggpairs(weather)
+# ggpairs(clim_topo)
+# ggpairs(firehist)
+
+#strongest correlations between weather variables, fuels variables, and lat/long
+#> selected precip and temp over AET and PRISM_vpd, and erc over fm100/1000
+```
+
+
+
+
+
+### Fit separate models for each ecoregion
+
+```{r}
+#scale numeric predictors for model fit - don't scale time between t or cbi or erc percentiles to maintain interpretation
+preds_2scale = c("heat_load", "PRISM_tmea", "PRISM_ppt_", "TPI_1024", "fm100_02_2", "th_02_21", "vpd_02_21", "erc_02_21", "PRISM_vpdm", "AET", "fm1000_02_", "ndvi", "shrub_rebrn", "tree_reburn", "afg_rebrn", "pfg_rebrn", "cbi_initial", "time_betwe", "erc_perc", "vpd_perc", "vs_perc")
+
+data_thin = data.frame(data_thin)
+
+scale_df = function(df){
+  data_scale = scale(df[(names(df) %in% preds_2scale)], scale = TRUE, center = TRUE)
+  data_scale_all = cbind(data_scale, df[!(names(df) %in% preds_2scale)])
+  return(data_scale_all)
+}
+
+#create new dfs for each ecoregion and scale each ecoregion separately 
+data_lowmod_ca = data_thin %>% filter(ecoregion == "California Coast") %>%
+  scale_df()
+
+data_lowmod_nm = data_thin %>% filter(ecoregion == "Northern Mountains") %>%
+  scale_df()
+
+data_lowmod_sw = data_thin %>% filter(ecoregion == "Southwest") %>%
+  scale_df()
+
+data_lowmod_wm = data_thin %>% filter(ecoregion == "Western Mountains") %>%
+  scale_df()
+
+```
+
+
+
+Test for spatial autocorrelation
+```{r}
+library(ape)
+inv_dist = with(data_lowmod_ca, 1/dist(cbind(lat, long), diag = TRUE, upper = TRUE))
+inv_dist = as.matrix(inv_dist)
+ape::Moran.I(data_lowmod_ca$cbi_reburn, weight = inv_dist, scaled = TRUE)
+
+#observed = 0.15  - CA; 0.11 - NM; 0.17 for SW, 0.07 for wm
+# While statistically significant, there actually isn’t too much going on, though it may be enough to warrant dealing with in some fashion.
+
+```
+
+
+Model fit/selection with mgcv 
+>https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/gam.selection.html 
+>https://stats.stackexchange.com/questions/519433/gam-and-multiple-continuous-continuous-interactions-tensor-smooths #helpful for interpretting and fitting interactions (ti vs te vs s)
+
+>all about gams: https://m-clark.github.io/generalized-additive-models/application.html#gam-1
+
+
+```{r}
+gm = function(df, k){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(PRISM_ppt_, k = k, bs = "cs") +
+                  s(PRISM_tmea, k = k, bs = "cs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs") +
+                  # s(ndvi, k = k, bs = "cs") +
+                  # s(tree_reburn, k = k, bs = "cs") +
+                  # ti(time_betwe, by = AET, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = PRISM_ppt_, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = PRISM_tmea, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = vpd_perc, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = vs_perc, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = erc_perc, k = k, bs = "cs") +
+                  ti(time_betwe, 
+                     by = cbi_initial, k = k, bs = "cs"),
+                 # ti(time_betwe, by = count_points_reburn, k = k, bs = "cs") +
+                 #account for spatial autocorrelation
+                 # s(long, lat, bs = 'gp', k = 100, m = 2, #Using the Gaussian process smooth produces a result that is akin to kriging. There are many other features to play with, as well as other bases that would be applicable -#
+               # correlation = corSpatial(form = ~ long + lat, type = 'gaussian',  # https://m-clark.github.io/generalized-additive-models/appendix.html
+
+             data = df,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+  return(gamfit)
+
+}
+
+
+gm_ndvi = function(df, k){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(PRISM_ppt_, k = k, bs = "cs") +
+                  s(PRISM_tmea, k = k, bs = "cs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs") +
+                  s(ndvi, k = k, bs = "cs") +
+                  # s(ndvi, k = k, bs = "cs") +
+                  # s(tree_reburn, k = k, bs = "cs") +
+                  # ti(time_betwe, by = AET, k = k, bs = "cs") +
+                  ti(time_betwe, by = PRISM_ppt_, k = k, bs = "cs") +
+                  ti(time_betwe, by = PRISM_tmea, k = k, bs = "cs") +
+                  ti(time_betwe, by = vpd_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = vs_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = erc_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = cbi_initial, k = k, bs = "cs"),
+             data = df,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+  return(gamfit)
+
+}
+
+gm_no_ints = function(df, k){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(PRISM_ppt_, k = k, bs = "cs") +
+                  s(PRISM_tmea, k = k, bs = "cs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs"),
+             data = df,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+  return(gamfit)
+
+}
+
+gm_bps = function(df, k){
+  
+  
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(BPS_lumped, k = 3, bs = "fs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs") +
+                  ti(time_betwe, by = BPS_lumped, k = 3, bs = "fs") +
+                  ti(time_betwe, by = vpd_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = vs_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = erc_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = cbi_initial, k = k, bs = "cs"),
+
+             data = df %>% mutate(BPS_lumped = as.factor(CT_lumped_codes3),
+                          BPS_lumped = recode(BPS_lumped, "Cold-Moist Mixed Conifer" = "Cold",
+                         "Cold-Dry Mixed Conifer" = "Cold")),
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+  return(gamfit)
+
+}
+
+
+```
+
+
+
+Examine model fits
+```{r}
+#not aet, includes prism temp/precip
+fit3_ca = gm(data_lowmod_ca, k = 5)
+fit3_nm = gm(data_lowmod_nm, k = 5)
+fit3_sw = gm(data_lowmod_sw, k = 5)
+fit3_wm = gm(data_lowmod_wm, k = 5)
+
+#with ndvi
+fit4_ca = gm_ndvi(data_lowmod_ca, k = 5)
+fit4_nm = gm_ndvi(data_lowmod_nm, k = 5)
+fit4_sw = gm_ndvi(data_lowmod_sw, k = 5)
+fit4_wm = gm_ndvi(data_lowmod_wm, k = 5)
+
+#no interactions
+fit5_ca = gm_no_ints(data_lowmod_ca, k = 5)
+fit5_nm = gm_no_ints(data_lowmod_nm, k = 5)
+fit5_sw = gm_no_ints(data_lowmod_sw, k = 5)
+fit5_wm = gm_no_ints(data_lowmod_wm, k = 5)
+
+#BPS instead of climate
+fit6_ca = gm_bps(data_lowmod_ca, k = 5)
+fit6_nm = gm_bps(data_lowmod_nm, k = 5)
+fit6_sw = gm_bps(data_lowmod_sw, k = 5)
+fit6_wm = gm_bps(data_lowmod_wm, k = 5)
+
+# plot(fit3_ca)
+# plot(fit3_nm)
+# summary(fit3_ca)
+
+#compare models with and without time between and interactions
+
+#compare models with and without ndvi 
+anova(fit3_ca, fit4_ca, test = "Chisq") #sig, increases % dev explained by 1, from 37.5 to 38.5
+anova(fit3_nm, fit4_nm, test = "Chisq") #sig, increases % dev explained by 4, from 32.8 to 33.2
+anova(fit3_sw, fit4_sw, test = "Chisq") #sig, increases % dev explained by 4, from 25.1 to 28.9
+anova(fit3_wm, fit4_wm, test = "Chisq") #sig, increases % dev explained by ~, from 22.7 to 24.3
+
+#compare models with and without interactions
+anova(fit3_ca, fit5_ca, test = "Chisq") #sig, decreases to 36.5 (1)
+anova(fit3_nm, fit5_nm, test = "Chisq") #sig, decreases to 31.2 (1.6)
+anova(fit3_sw, fit5_sw, test = "Chisq") #sig, decreases to 23.2 (1.9)
+anova(fit3_wm, fit5_wm, test = "Chisq") #sig, decreases to 18.6 (4.1)
+#interactions increase deviance, but not by very much
+```
+
+
+
+Check residuals
+```{r}
+#k = 5
+gam.check(fit3_ca) 
+gam.check(fit3_nm) 
+gam.check(fit3_sw) 
+gam.check(fit3_wm)
+#- still some significance in the residuals tests, but edf is below 6 so there are likely other issues with the models? thinning helped this a bit
+
+
+#including lat long did not improve the residuals and it is highly correlated with other predictors, so leaving out
+
+
+#check for concurvity - non-linearly related variables; Ignore interactions? 
+concurv_ca = concurvity(fit3_ca, full = FALSE)  
+concurv_ca = concurv_ca$observed
+
+resid_ca = residuals(fit3_ca) 
+resid_nm = residuals(fit3_nm)
+resid_sw = residuals(fit3_sw)
+resid_wm = residuals(fit3_wm)
+
+#add residuals to dfs
+data_lowmod_ca$resids = resid_ca
+data_lowmod_nm$resids = resid_nm
+data_lowmod_sw$resids = resid_sw
+data_lowmod_wm$resids = resid_wm
+
+#plot residuals against covariates
+plot_resids_cov = function(data){
+  resid_plot = data %>%
+  dplyr::select(PRISM_ppt_, TPI_1024,
+                PRISM_tmea, cbi_initial, time_betwe,
+                erc_perc, vs_perc, vpd_perc, heat_load, resids) %>%
+  pivot_longer(-resids, names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
+  ggplot(aes(x = scale(value), y = resids)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_smooth(formula = y ~ s(x, bs = "cs", k = 6)) +
+  theme_bw(13)
+  return(resid_plot)
+}
+
+plot_resids_cov(data_lowmod_ca)
+plot_resids_cov(data_lowmod_sw)
+plot_resids_cov(data_lowmod_nm)
+plot_resids_cov(data_lowmod_wm)
+#covaraite/residual relationships look good! 
+
+
+
+#investigate spatial autocorrelation - must be decimal degrees? 
+library(gstat) 
+
+#project data
+project_func = function(df){
+  xy <- df[,c("long","lat")]
+  spdf <- SpatialPointsDataFrame(coords = xy, data = df,
+                             proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84
+                                               +towgs84=0,0,0"))
+  return(spdf)
+}
+
+ca_proj = project_func(data_lowmod_ca)
+sw_proj = project_func(data_lowmod_sw)
+nm_proj = project_func(data_lowmod_nm)
+wm_proj = project_func(data_lowmod_wm)
+
+vca = plot(variogram(resid_ca~1, data=ca_proj, cutoff = 5), main = "cali coast")
+vnm = plot(variogram(resid_nm~1, data=nm_proj, cutoff = 5), main = "northern mnts")
+vsw = plot(variogram(resid_sw~1, data=sw_proj, cutoff = 5), main = "southwest")
+vwm = plot(variogram(resid_wm~1, data=wm_proj, cutoff = 5), main = "Western mnts")
+
+grid.arrange(vca, vsw, vnm, vwm, nrow= 2, ncol=2)
+```
+
+Summarise models
+```{r}
+library(texreg) #for creating easy tables from gam output
+extract(fit3_ca)
+extract(fit3_wm)
+extract(fit3_sw)
+extract(fit3_nm)
+
+summary(fit3_ca)
+```
+
+
+
+
+
+### Predict
+
+ERC predictions
+```{r}
+library(tidymv)
+
+predict(fit3_ca)
+
+erc_preds_func = function(gam_fit, df){
+  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = 0, PRISM_tmea = 0, erc_perc =c(0.9, .95, .97), time_betwe = seq(0.1, 2.7, by = 0.1), cbi_initial = 1.5, vs_perc = .5, vpd_perc = .9, heat_load = 0, TPI_1024 = 0, count_burn = 2)) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
+  return(preds)
+}
+
+ca_preds = erc_preds_func(fit3_ca, data_lowmod_ca)
+sw_preds = erc_preds_func(fit3_sw, data_lowmod_sw)
+nm_preds = erc_preds_func(fit3_nm, data_lowmod_nm)
+wm_preds = erc_preds_func(fit3_wm, data_lowmod_wm)
+
+
+plot_preds = function(preds){
+  
+  plot = preds %>%
+  ggplot(aes(time_betwe, fit)) +
+    geom_smooth_ci(erc_perc, size = 1.05, legend = NA)+
+    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
+    scale_linetype_manual(values =c(1,2,3))+
+  theme_bw(13) +
+  theme(legend.title = element_blank())
+  ylim(0.5, 3)
+  
+  return(plot)
+}
+
+pca = plot_preds(ca_preds) + ggtitle("California coast")
+psw = plot_preds(sw_preds) + ggtitle("Southwest")
+pnm = plot_preds(nm_preds) + ggtitle("Northern Mountains")
+pwm = plot_preds(wm_preds) + ggtitle("Western Mountains")
+
+grid.arrange(pca, pwm, psw, pnm, nrow= 2, ncol=2)# 
+```
+
+Explore predictor space to determine values for prediction 
+```{r}
+#create prediction dfs with with 3 values for weather and all values for time between
+# Explore predictor space to help determine values for weather vars 
+par(mfrow = c(2, 2))
+plot(data_lowmod_ca$vpd_perc, data_lowmod_ca$erc_perc, main = "CA weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.80, col = "blue")
+
+#western MTs
+plot(data_lowmod_wm$vpd_perc, data_lowmod_wm$erc_perc, main = "WM weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.80, col = "blue")
+#northern MTs
+plot(data_lowmod_nm$vpd_perc, data_lowmod_nm$erc_perc, main = "NM weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.80, col = "blue")
+
+#southwest 
+plot(data_lowmod_sw$vpd_perc, data_lowmod_sw$erc_perc, main = "SW weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.80, col = "blue")
+
+# wind speed vs vpd
+par(mfrow = c(2, 2))
+plot(data_lowmod_ca$vpd_perc, data_lowmod_ca$vs_perc, main = "CA weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.5, col = "blue")
+
+#western MTs
+plot(data_lowmod_wm$vpd_perc, data_lowmod_wm$vs_perc, main = "WM weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.5, col = "blue")
+#northern MTs
+plot(data_lowmod_nm$vpd_perc, data_lowmod_nm$vs_perc, main = "NM weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.5, col = "blue")
+
+#southwest 
+plot(data_lowmod_sw$vpd_perc, data_lowmod_sw$vs_perc, main = "SW weather")
+abline(v = 0.97, h = 0.97, col = "red")
+abline(v = 0.90, h = 0.90, col = "orange")
+abline(v = 0.80, h = 0.5, col = "blue")
+
+```
+
+Explore predictor space for climate vars
+```{r}
+# Explore predictor space to help determine values for weather vars 
+par(mfrow = c(2, 2))
+
+plot(data_lowmod_ca$PRISM_tmea, data_lowmod_ca$PRISM_ppt_, main = "ca")
+abline(v = quantile(data_lowmod_ca$PRISM_tmea, 0.1), h = quantile(data_lowmod_ca$PRISM_ppt_, 0.75), col = "blue")
+abline(v = quantile(data_lowmod_ca$PRISM_tmea, 0.9), h = quantile(data_lowmod_ca$PRISM_ppt_, 0.25), col = "red")
+abline(v = quantile(data_lowmod_ca$PRISM_tmea, 0.9), h = quantile(data_lowmod_ca$PRISM_ppt_, 0.75), col = "green")
+
+plot(data_lowmod_sw$PRISM_tmea, data_lowmod_sw$PRISM_ppt_, main = "sw")
+abline(v = quantile(data_lowmod_sw$PRISM_tmea, 0.1), h = quantile(data_lowmod_sw$PRISM_ppt_, 0.75), col = "blue")
+abline(v = quantile(data_lowmod_sw$PRISM_tmea, 0.9), h = quantile(data_lowmod_sw$PRISM_ppt_, 0.25), col = "red")
+abline(v = quantile(data_lowmod_sw$PRISM_tmea, 0.9), h = quantile(data_lowmod_sw$PRISM_ppt_, 0.75), col = "green")
+
+plot(data_lowmod_nm$PRISM_tmea, data_lowmod_nm$PRISM_ppt_, main = "nm")
+abline(v = quantile(data_lowmod_nm$PRISM_tmea, 0.1), h = quantile(data_lowmod_nm$PRISM_ppt_, 0.75), col = "blue")
+abline(v = quantile(data_lowmod_nm$PRISM_tmea, 0.9), h = quantile(data_lowmod_nm$PRISM_ppt_, 0.25), col = "red")
+abline(v = quantile(data_lowmod_nm$PRISM_tmea, 0.9), h = quantile(data_lowmod_nm$PRISM_ppt_, 0.75), col = "green")
+
+plot(data_lowmod_wm$PRISM_tmea, data_lowmod_wm$PRISM_ppt_, main = "wm")
+abline(v = quantile(data_lowmod_wm$PRISM_tmea, 0.1), h = quantile(data_lowmod_wm$PRISM_ppt_, 0.75), col = "blue")
+abline(v = quantile(data_lowmod_wm$PRISM_tmea, 0.9), h = quantile(data_lowmod_wm$PRISM_ppt_, 0.25), col = "red")
+abline(v = quantile(data_lowmod_wm$PRISM_tmea, 0.9), h = quantile(data_lowmod_wm$PRISM_ppt_, 0.75), col = "green")
+```
+
+
+Weather predictions
+```{r}
+#prediction df with most variables set to mean = 0
+preds_dfw_func = function(df, fit){
+  df_w97 = data.frame(count_burn = 2, 
+                       # AET = 0, 
+                       PRISM_ppt_ = 0, PRISM_tmea = 0,
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                      # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set weather variables to 3rd quantile value by ecoregion
+                       vpd_perc = 1,
+                       erc_perc = 1,
+                       # vs_02_21 = quantile(df$vs_02_21, 0.95),
+                       vs_perc = 0,
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
+                       weather = "97perc?1SD",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+  df_w90 = data.frame(count_burn = 2, 
+                       # AET = 0, 
+                       PRISM_ppt_ = 0, PRISM_tmea = 0,
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                      # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set weather variables to mean 
+                       vpd_perc = .5, erc_perc = .5, 
+                       vs_perc = 0,
+                       #set time between fires to full range 1-25 years
+                      time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
+                      weather = "90perc-.5sd",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+  df_w80 = data.frame(count_burn = 2, 
+                       # AET = 0, 
+                       PRISM_ppt_ = 0, PRISM_tmea = 0,
+                       cbi_initial = 0, heat_load = 0, TPI_1024 = 0,
+                      # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set weather variables to 1st quantile value  
+                       vpd_perc = 0,
+                       erc_perc = 0,
+                       # vs_perc = quantile(df$vs_perc, 0.25),
+                       vs_perc = 0.5,
+                       #set time between fires to full range 1-25 years
+                      time_betwe = seq(min(df$time_betwe), max(df$time_betwe), by = .1),
+                      weather = "80perc-mean",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+  
+  data_w = rbind(df_w97, df_w80, df_w90)
+  
+  #predict to new data
+  p = predict.gam(fit, newdata = data_w, se.fit = TRUE)
+  
+  #add predictions to df for plotting
+  data_w$cbi_reburn = p$fit
+  data_w$upr = p$fit + (2 * p$se.fit)
+  data_w$lwr = p$fit - (2 * p$se.fit)
+  
+  return(data_w)
+}
+
+preds_w_ca <- preds_dfw_func(df = data_lowmod_ca, fit = fit3_ca)
+preds_w_nm <- preds_dfw_func(df = data_lowmod_nm, fit = fit3_nm)
+preds_w_sw <- preds_dfw_func(df = data_lowmod_sw, fit = fit3_sw)
+preds_w_wm <- preds_dfw_func(df = data_lowmod_wm, fit = fit3_wm)
+```
+
+climate predictions
+```{r}
+# #find west wide climate quantiles
+# precip75 = quantile(data_lowmod$PRISM_ppt_, 0.75)
+
+
+#prediction df with variables set to mean = 0
+preds_dfc_func = function(df, fit){
+  #cool wet - high productivity
+  df_coolwet = data.frame(count_burn = 2, 
+                        #set climate vars
+                       # AET = quantile(df$AET, 0.75), 
+                       PRISM_ppt_ = quantile(df$PRISM_ppt_, 0.75),
+                       PRISM_tmea = quantile(df$PRISM_tmea, 0.1),
+                        #control for other vars - mean
+                       cbi_initial = 1.5, heat_load = 0, TPI_1024 = 0,
+                       vpd_perc  = mean(df$vpd_perc), erc_perc = mean(df$erc_perc),
+                       vs_perc = mean(df$vs_perc),
+                       # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 3.6, by = .1),
+                       climate = "cool/wet",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+
+  #hot dry - low productivity
+  df_hotdry = data.frame(count_burn = 2, 
+                        #set climate vars
+                       # AET = quantile(df$AET, 0.25), 
+                       PRISM_ppt_ = quantile(df$PRISM_ppt_, 0.25),
+                       PRISM_tmea = quantile(df$PRISM_tmea, 0.9),
+                        #control for other vars - mean
+                       cbi_initial = 1.5, heat_load = 0, TPI_1024 = 0,
+                       vpd_perc  = mean(df$vpd_perc), erc_perc = mean(df$erc_perc),
+                       vs_perc = mean(df$vs_perc),
+                       # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 3.6, by = .1),
+                       climate = "hot/dry",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+  
+    #hot dry - low productivity
+  df_warmwet = data.frame(count_burn = 2, 
+                        #set climate vars
+                       # AET = quantile(df$AET, 0.25), 
+                       PRISM_ppt_ = quantile(df$PRISM_ppt_, 0.75),
+                       PRISM_tmea = quantile(df$PRISM_tmea, 0.9),
+                        #control for other vars - mean
+                       cbi_initial = 1.5, heat_load = 0, TPI_1024 = 0,
+                       vpd_perc  = mean(df$vpd_perc), erc_perc = mean(df$erc_perc),
+                       vs_perc = mean(df$vs_perc),
+                       # afg_rebrn = 0, pfg_rebrn = 0,
+                       #set time between fires to full range 1-25 years
+                       time_betwe = seq(0.1, 3.6, by = .1),
+                       climate = "hot/wet",
+                       #control for lat long
+                       lat = mean(df$lat),
+                       long = mean(df$long))
+  
+  
+  data_c = rbind(df_coolwet, df_hotdry, df_warmwet)
+  
+  #predict to new data
+  p = predict.gam(fit, newdata = data_c, se.fit = TRUE)
+  
+  #add predictions to df for plotting
+  data_c$cbi_reburn = p$fit
+  data_c$upr = p$fit + (2 * p$se.fit)
+  data_c$lwr = p$fit - (2 * p$se.fit)
+  return(data_c)
+}
+
+preds_c_ca <- preds_dfc_func(df = data_lowmod_ca, fit = fit3_ca)
+preds_c_nm <- preds_dfc_func(df = data_lowmod_nm, fit = fit3_nm)
+preds_c_sw <- preds_dfc_func(df = data_lowmod_sw, fit = fit3_sw)
+preds_c_wm <- preds_dfc_func(df = data_lowmod_wm, fit = fit3_wm)
+```
+
+#### Plot predictions
+
+Unscale predictions for data vis
+```{r}
+predictor_plot_func = function(df_preds){  
+  df_unscale = df_preds %>%
+    mutate(time_betwe_unscale = (time_betwe * sd(time_betwe)) + mean(time_betwe),
+           cbi_initial_unscale = (cbi_initial * sd(cbi_initial)) + mean(cbi_initial),
+           erc_perc_unscale = (erc_perc * sd(erc_perc)) + mean(erc_perc),
+           vpd_perc_unscale = (vpd_perc * sd(vpd_perc)) + mean(vpd_perc))
+  
+  return(df_unscale)
+}
+  
+  
+
+
+```
+
+plot interaction between weather and time between fires
+```{r}
+library(gridExtra)
+
+predictor_plot_func = function(df_preds, df_raw, group_var){
+  p = ggplot(data = df_preds, aes(x = time_betwe, y = cbi_reburn, color = group_var)) +
+         geom_line(size = 1.05)+
+           geom_ribbon(aes(ymin = lwr, ymax = upr, fill = group_var), alpha = 0.1, colour = NA)+
+         theme_bw() +
+        scale_color_manual(values = c("lightseagreen", "#FFBF69", "#852750"))+
+    scale_fill_manual(values = c("lightseagreen", "#FFBF69", "#852750"))+
+  ylim(0.5, 3) +
+    # scale_x_continuous(breaks = c(5,10,15,20,25,30,35))+
+    xlab("time between fires") +
+    ylab("reburn CBI")+
+   theme(panel.grid.minor = element_blank())
+  
+  p2 = p + geom_rug(data = df_raw, aes(x = time_betwe, y = cbi_reburn), 
+                    color = "grey", alpha = .3, position = "jitter", length = unit(0.05, "npc"))
+  return(p2)
+
+}
+
+pca = predictor_plot_func(preds_w_ca, data_lowmod_ca, preds_w_ca$weather) + 
+  ggtitle("California Coast") + xlab("") +
+  theme(legend.position = "none")    
+
+psw = predictor_plot_func(preds_w_sw, data_lowmod_sw, preds_w_sw$weather) + 
+  ggtitle("Southwest") + xlab("") + ylab("")
+
+pnm = predictor_plot_func(preds_w_nm, data_lowmod_nm, preds_w_nm$weather) + 
+  ggtitle("Northern Mountains") +
+  theme(legend.position = "none")    
+
+pwm = predictor_plot_func(preds_w_wm, data_lowmod_wm, preds_w_wm$weather) + 
+  ggtitle("Western Mountains") + ylab("") +
+  theme(legend.position = "none")    
+
+library(patchwork)
+#plot with patchwork
+pca + psw + pnm + pwm + 
+  plot_layout(ncol = 2)
+```
+
+plot interaction between climate/ productivity and time between fires
+```{r}
+pca = ggplot(data = preds_c_ca, aes(x = time_betwe, y = cbi_reburn, color = climate)) +
+
+    ylim(0.5, 3)+
+            geom_line(size = 1.01) +
+             geom_ribbon(aes(ymin = lwr, ymax = upr, fill = climate), alpha = 0.1, colour = NA)+
+         theme_bw() +
+      scale_color_manual(values = c("#247ba0", "sienna1", "#76B041"))+
+    scale_fill_manual(values = c("#247ba0", "sienna1", "#76B041"))+
+  ggtitle("California coast")
+
+psw = ggplot(data = preds_c_sw, aes(x = time_betwe, y = cbi_reburn, color = climate)) +
+
+    ylim(0.5, 3)+
+         geom_line(size = 1.01) +
+             geom_ribbon(aes(ymin = lwr, ymax = upr, fill = climate), alpha = 0.1, colour = NA)+
+         theme_bw()+
+      scale_color_manual(values = c("#247ba0", "sienna1", "#76B041"))+
+    scale_fill_manual(values = c("#247ba0", "sienna1",  "#76B041"))+
+  ggtitle("Southwest")
+
+pnm = ggplot(data = preds_c_nm, aes(x = time_betwe, y = cbi_reburn, color = climate)) +
+
+    ylim(0.5, 3)+
+         geom_line(size = 1.01) +
+             geom_ribbon(aes(ymin = lwr, ymax = upr, fill = climate), alpha = 0.1, colour = NA)+
+         theme_bw()+
+      scale_color_manual(values = c("#247ba0", "sienna1",  "#76B041"))+
+    scale_fill_manual(values = c("#247ba0", "sienna1",  "#76B041"))+
+  ggtitle("Northern mountains")
+
+pwm = ggplot() +
+    ylim(0.5, 3)+
+         geom_line(data = preds_c_wm, aes(x = time_betwe, y = cbi_reburn, color = climate), size = 1.01) +
+             geom_ribbon(data = preds_c_wm, aes(x = time_betwe, ymin = lwr, ymax = upr, fill = climate), alpha = 0.1, colour = NA)+
+         theme_bw()+
+      scale_color_manual(values = c("#247ba0", "sienna1",  "#76B041"))+
+    scale_fill_manual(values = c("#247ba0", "sienna1",  "#76B041"))+
+  ggtitle("Western mountains")
+
+
+grid.arrange(pca, psw, pnm, pwm, nrow= 2, ncol=2)
+
+
+
+```
+
+# BPS Models
+--------- BPS Models --------------------------
+
+BPS models
+```{r BPS models}
+#filter dfs by bps
+cold_df = data_thin %>% filter(CT_lumped_codes3 == "Cold-Moist Mixed Conifer" | 
+                                CT_lumped_codes3 == "Cold-Dry Mixed Conifer") %>%
+  scale_df()
+
+drymixed_df = data_thin %>% filter(CT_lumped_codes3 == "Dry Mixed Conifer") %>%
+  scale_df()
+
+moistmixed_df = data_thin %>% filter(CT_lumped_codes3 == "Moist-Mixed Conifer") %>%
+  scale_df()
+
+hardwood_df = data_thin %>% filter(CT_lumped_codes3 == "Hardwood-Mixed Conifer") %>%
+  scale_df()
+```
+
+GAMs
+```{r}
+#model 
+gm_bps = function(df, k){
+  
+  #fit gam - removed fm100 & fm1000, reburn shrub cover, ndvi, and management 
+  gamfit = gam(cbi_reburn ~ count_burn + #not logit transformed response
+                  # s(AET, k = k, bs = "cs") +
+                  # s(count_points_reburn, k = k, bs = "cs")+
+                  s(PRISM_ppt_, k = k, bs = "cs") + 
+                  s(PRISM_tmea, k = k, bs = "cs") +
+                  # s(PRISM_vpdm, k = k, bs = "cs") +
+                  s(cbi_initial, k = k, bs = "cs") +
+                  s(time_betwe, k = k, bs = "cs") +
+                  s(erc_perc, k = k, bs = "cs") +
+                  s(vs_perc, k = k, bs = "cs") +
+                  s(vpd_perc, k = k, bs = "cs") +
+                  # s(afg_rebrn, k = 5, bs = "cs") +
+                  # s(pfg_rebrn, k = 5, bs = "cs") +
+                  s(heat_load, k = k, bs = "cs") +
+                  s(TPI_1024, k = k, bs = "cs") +
+                  # s(ndvi, k = k, bs = "cs") +
+                  # s(tree_reburn, k = k, bs = "cs") +
+                  # ti(time_betwe, by = AET, k = k, bs = "cs") +
+                  # ti(time_betwe, by = PRISM_ppt_, k = k, bs = "cs") +
+                  # ti(time_betwe, by = PRISM_tmea, k = k, bs = "cs") +
+                  ti(time_betwe, by = vpd_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = vs_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = erc_perc, k = k, bs = "cs") +
+                  ti(time_betwe, by = cbi_initial, k = k, bs = "cs"),
+                 
+                 # ti(time_betwe, by = TPI_1024, k = k, bs = "cs") +
+                 # ti(time_betwe, by = count_points_reburn, k = k, bs = "cs") +
+                 #account for spatial autocorrelation
+                 # s(long, lat, bs = 'gp', k = 100, m = 2), #Using the Gaussian process smooth produces a result that is akin to kriging. There are many other features to play with, as well as other bases that would be applicable -#
+               # correlation = corSpatial(form = ~ long + lat, type = 'gaussian')  # https://m-clark.github.io/generalized-additive-models/appendix.html
+
+             data = df,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+  return(gamfit)
+
+}
+
+
+fit_c = gm_bps(cold_df, k = 5)
+fit_d = gm_bps(drymixed_df, k = 5)
+fit_m = gm_bps(moistmixed_df, k = 5)
+fit_h = gm_bps(hardwood_df, k = 5)
+```
+
+
+Check residuals
+```{r}
+gam.check(fit_c) 
+gam.check(fit_d) 
+gam.check(fit_m) 
+gam.check(fit_h)
+#residuals are not as nice as with the ecoregion models although k residual checking is slightly better
+```
+Model summary
+```{r}
+summary(fit_c)
+summary(fit_d)
+summary(fit_m)
+summary(fit_h)
+
+plot(fit_c)
+plot(fit_d)
+plot(fit_m)
+plot(fit_h)
+
+par(mfrow = c(2, 2))
+vis.gam(fit_c, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("cold forest")
+vis.gam(fit_d, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("dry mixed")
+vis.gam(fit_m, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("moist mixed")
+vis.gam(fit_h, view=c('time_betwe', 'cbi_initial'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("hardwood")
+
+par(mfrow = c(2, 2))
+vis.gam(fit_c, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("cold forest")
+vis.gam(fit_d, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("dry mixed")
+vis.gam(fit_m, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("moist mixed")
+vis.gam(fit_h, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("hardwood")
+
+par(mfrow = c(2, 2))
+vis.gam(fit_c, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("cold forest")
+vis.gam(fit_d, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("dry mixed")
+vis.gam(fit_m, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("moist mixed")
+vis.gam(fit_h, view=c('time_betwe', 'PRISM_ppt_'), n.grid=50, theta=30, phi=32, zlab="", too.far=0.1)+title("hardwood")
+```
+
+### Predict BPS models
+
+Weather predictions
+
+```{r}
+preds_w_c <- preds_dfw_func(df = cold_df, fit = fit_c)
+preds_w_d<- preds_dfw_func(df = drymixed_df, fit = fit_d)
+preds_w_m <- preds_dfw_func(df = moistmixed_df, fit = fit_m)
+preds_w_h <- preds_dfw_func(df = hardwood_df, fit = fit_h)
+```
+
+climate predictions
+
+
+#### Plot predictions
+
+plot interaction between weather and time between fires for BPS models
+
+```{r}
+pc = predictor_plot_func(preds_w_c, cold_df, preds_w_c$weather) + 
+  ggtitle("cold mixed-conifer") + xlab("") +
+  theme(legend.position = "none")    
+
+pd = predictor_plot_func(preds_w_d, drymixed_df, group_var = preds_w_d$weather) + 
+  ggtitle("dry mixed-conifer") + xlab("") + ylab("")
+
+pm= predictor_plot_func(preds_w_m, moistmixed_df, preds_w_m$weather) + 
+  ggtitle("moist mixed-conifer") +
+  theme(legend.position = "none")    
+
+ph = predictor_plot_func(preds_w_h, hardwood_df, preds_w_h$weather) + 
+  ggtitle("Hardwood mixed-conifer") + ylab("") +
+  theme(legend.position = "none")    
+
+#plot with patchwork
+library(patchwork)
+pc + pd + pm + ph + 
+  plot_layout(ncol = 2)
+```
+
+Initial CBI predictions
+```{r}
+library(tidymv)
+
+cbi_preds_func = function(gam_fit, df){
+  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = 0, PRISM_tmea = 0, erc_perc =0.95, time_betwe = seq(0.1, 2.7, by = 0.1), cbi_initial = c(0.5, 1.5, 2.5), vs_perc = .5, vpd_perc = .9, heat_load = 0, TPI_1024 = 0, count_burn = 2)) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
+  return(preds)
+}
+
+c_preds = cbi_preds_func(fit_c, cold_df)
+d_preds = cbi_preds_func(fit_d, drymixed_df)
+m_preds = cbi_preds_func(fit_m, moistmixed_df)
+h_preds = cbi_preds_func(fit_h, hardwood_df)
+
+
+plot_preds = function(preds){
+  
+  plot = preds %>%
+  ggplot(aes(time_betwe, fit)) +
+    geom_smooth_ci(cbi_initial, size = 1.05, legend = NA)+
+    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
+    scale_linetype_manual(values =c(1,2,3))+
+  ylim(0.5, 3) +
+  theme_bw(13) +
+  theme(legend.title = element_blank())
+  ylim(0.5, 3)
+  
+  return(plot)
+}
+
+pc = plot_preds(c_preds) + ggtitle("Cold mixed conifer")
+pd = plot_preds(d_preds) + ggtitle("dry mixed conifer")
+pm = plot_preds(m_preds) + ggtitle("moist mixed conifer")
+ph = plot_preds(h_preds) + ggtitle("hardwood mixed conifer")
+
+grid.arrange(pc, pd, pm, ph, nrow= 2, ncol=2)# 
+```
+
+wind speed predictions
+```{r}
+library(tidymv)
+
+vs_preds_func = function(gam_fit, df){
+  preds = predict_gam(gam_fit, length_out = 30, values = list(PRISM_ppt_ = 0, PRISM_tmea = 0, erc_perc =0.95, time_betwe = seq(0.1, 2.7, by = 0.1), cbi_initial = 1.5, vs_perc = c(0.25,.5,.95), vpd_perc = .9, TPI_1024 = 0, heat_load = 0, count_burn = 2)) #exclude_terms = "s(long,lat)") #count_points_reburn = seq(1, 2000, by = 10))
+  return(preds)
+}
+
+c_preds = vs_preds_func(fit_c, cold_df)
+d_preds = vs_preds_func(fit_d, drymixed_df)
+m_preds = vs_preds_func(fit_m, moistmixed_df)
+h_preds = vs_preds_func(fit_h, hardwood_df)
+
+
+plot_preds = function(preds){
+  
+  plot = preds %>%
+  ggplot(aes(time_betwe, fit)) +
+    geom_smooth_ci(vs_perc, size = 1.05, legend = NA)+
+    scale_color_manual(values= c("lightseagreen", "sienna1", "tomato3")) +
+    scale_linetype_manual(values =c(1,2,3))+
+  ylim(0.5, 3) +
+  theme_bw(13) +
+  theme(legend.title = element_blank())
+  ylim(0.5, 3)
+  
+  return(plot)
+}
+
+pc = plot_preds(c_preds) + ggtitle("Cold mixed conifer")
+pd = plot_preds(d_preds) + ggtitle("dry mixed conifer")
+pm = plot_preds(m_preds) + ggtitle("moist mixed conifer")
+ph = plot_preds(h_preds) + ggtitle("hardwood mixed conifer")
+
+grid.arrange(pc, pd, pm, ph, nrow= 2, ncol=2)# 
+```
+
+
+
+-------------------- Vegetation data exploration! -----------
+
+## Veg data exploration
+```{r}
+data_lowmod_ca2 = data_lowmod %>% filter(ecoregion == "California Coast")
+data_lowmod_nm2 = data_lowmod %>% filter(ecoregion == "Northern Mountains") 
+data_lowmod_sw2 = data_lowmod %>% filter(ecoregion == "Southwest") 
+data_lowmod_wm2 = data_lowmod %>% filter(ecoregion == "Western Mountains")
+
+
+#thinned scaled data
+
+thin_sw_xy = read.csv(datadir("prelim-outputs/points/thinned_data_sw.csv")) %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+thin_sw_veg = left_join(thin_sw_xy, data_lowmod_sw2 %>% mutate_at(vars(lat, long), list(~ round(., 5))))
+
+thin_nm_xy = read.csv(datadir("prelim-outputs/points/thinned_data_nm.csv"))%>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+thin_nm_veg = left_join(thin_nm_xy, data_lowmod_nm2  %>%
+  mutate_at(vars(lat, long), list(~ round(., 5))))
+
+thin_nm_xy = read.csv(datadir("prelim-outputs/points/thinned_data_nm.csv"))%>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+thin_nm_veg = left_join(thin_nm_xy, data_lowmod_nm2  %>%
+  mutate_at(vars(lat, long), list(~ round(., 5))))
+
+
+thin_ca_xy = read.csv(datadir("prelim-outputs/points/thinned_data_ca.csv"))%>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+thin_ca_veg = left_join(thin_ca_xy, data_lowmod_ca2  %>%
+  mutate_at(vars(lat, long), list(~ round(., 5))))
+
+thin_wm1_xy = read.csv(datadir("prelim-outputs/points/thinned_data_wm1.csv"))
+thin_wm2_xy = read.csv(datadir("prelim-outputs/points/thinned_data_wm2.csv"))
+thin_wm_xy = bind_rows(thin_wm1_xy, thin_wm2_xy) %>%
+  mutate_at(vars(lat, long), list(~ round(., 5)))
+thin_wm_veg = left_join(thin_wm_xy, data_lowmod_wm2  %>%
+  mutate_at(vars(lat, long), list(~ round(., 5))))
+
+
+```
+
+
+```{r}
+data_thin = rbind(thin_ca_veg, thin_wm_veg, thin_sw_veg, thin_nm_veg)
+
+data_thin$total_veg_cover = data_thin$tree_reburn + data_thin$afg_rebrn + data_thin$pfg_rebrn + data_thin$shrub_rebrn
+
+data_veg = data_thin %>% pivot_longer(c(afg_rebrn, pfg_rebrn, shrub_rebrn, tree_reburn), names_to ="veg_type", values_to = "reburn_cover")
+  
+data_veg  %>% ggplot() +
+  geom_boxplot(aes(y = reburn_cover, x = ecoregion, fill = veg_type)) +
+  theme_bw(13)
+
+data_veg %>% filter(veg_type != "tree_reburn") %>%
+  ggplot(aes(x = reburn_cover, y = ecoregion, fill = veg_type))+
+  geom_bar(position = "fill", stat = "identity")+
+  theme_minimal()
+
+
+#veg types ~ initial cbi and time between
+data_veg  %>% 
+  ggplot(aes(y = reburn_cover, x = time_betwe, color = cut(cbi_initial, breaks = seq(.5, 3, by = 0.75)))) +
+  geom_smooth()+
+  facet_grid(rows = vars(veg_type), cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+
+#precip + temp
+data_veg  %>% 
+  ggplot(aes(y = reburn_cover, x = PRISM_ppt_, color = cut(PRISM_tmea, breaks = c(0.65, 8, 12, 19)))) +
+  geom_smooth()+
+  facet_grid(rows = vars(veg_type), cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+
+#ndvi
+data_thin %>%
+  ggplot(aes(y = ndvi, x = time_betwe, color = cut(cbi_initial, breaks = seq(.5, 3, by = 0.75)))) +
+  geom_smooth()+
+  facet_grid(cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+```
+
+BPS assignments
+```{r}
+#BPS
+data_thin %>%
+  ggplot(aes(x = as.factor(LC16_BPS_2))) +
+  geom_bar()+
+  facet_grid(cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+
+unique_bps = data_thin %>%
+  group_by(LC16_BPS_2) %>%
+  summarise(n = n()) %>%
+  mutate(VALUE = LC16_BPS_2)
+
+bps_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/LF16_BPS_200.csv"))
+
+unique_bps = inner_join(unique_bps, bps_codes)
+
+ct_codes = read.csv(datadir("/raw-data/Landfire/LF2016_BPS_200_CONUS/CSV_Data/unique_LF16_BPS_200_codes_thinned_reburn_data.csv"))
+
+ct_bps = inner_join(unique_bps, ct_codes)
+
+data_thin_bps = left_join(data_thin, ct_bps)
+
+library(ggridges)
+data_thin_bps %>% 
+  ggplot(aes(x = cbi_reburn, y = CT_lumped_codes3, group = CT_lumped_codes3, fill = CT_lumped_codes3))+
+  geom_density_ridges()+
+  facet_grid(cols= vars(ecoregion), scales = "free")+
+  theme_bw(13)
+
+# scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "light grey", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788"))
+
+# data_thin_bps %>% 
+#   ggplot(aes(x = n, y = CT_lumped_codes2, fill = ecoregion))+
+#   geom_bar(position = "fill", stat = "identity")+
+#   theme_bw(13)
+
+count_bps = data_thin_bps %>% group_by(CT_lumped_codes3) %>% summarise(n = n())
+
+common_bps = c("Mixed Conifer Forest", "Mixed Evergreen", "Ponderosa Pine Woodland", "Riparian", "Spruce-Fir Forest", "Douglas-fir-Western Hemlock Forest", "Oak Woodland", "Pine-Oak Forest", "Shrubland/Chaparral", "Red Fir Forest", "Douglas-fir Forest", "Coastal Redwood Forest", "Subalpine Woodland", "Pinyon-Juniper Woodland")
+
+data_thin_bps %>%
+  ggplot(aes(x = n, y = ecoregion, fill = CT_lumped_codes3))+
+  geom_bar(position = "fill", stat = "identity")+
+  theme_bw(13)
+  
+scale_fill_manual(values = c("#771155", "#AA4488", "#CC99BB", "#114477", "#4477AA", "#77AADD", "#117777", "#44AAAA", "#77CCCC", "#117744", "light grey", "#88CCAA", "#777711", "#AAAA44", "#DDDD77", "#774411", "#AA7744", "#DDAA77", "#771122", "#AA4455", "#DD7788"))
+
+
+```
+
