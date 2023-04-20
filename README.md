@@ -1,6 +1,6 @@
 # reburn-project
 ## Data management approach for this repo
-This repository contains only code files and supporting files. It does not contain data. The data folder for this repository is located on Box: https://ucdavis.app.box.com/folder/165902052978
+This repository contains code files and supporting files and final data. It does not contain preliminary data. The data folder for this repository is located on Box: https://ucdavis.app.box.com/folder/165902052978
 
 The scripts in this repo are set up so that all references to the data directory are relative, except for one file: data_dir.txt. You need to change the contents of this file so that it lists the root location of the data directory on your machine. If the data_dir.txt file does not exist, you need to create it (git ignores it as specified in the .gitignore file). The data_dir.txt file belongs in the root directory of the repo.
 
