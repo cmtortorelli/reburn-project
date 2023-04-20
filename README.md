@@ -1,6 +1,6 @@
 # reburn-project
 ## Data management approach for this repo
-This repository contains code files and supporting files and final data. 
+This repository contains code and supporting files and final data. 
 
 The thinned points dataframe and attributes are located in the final-points folder.
 Final model rms files are located in the final-models folder.
