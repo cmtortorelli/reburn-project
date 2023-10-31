@@ -1,0 +1,411 @@
+---
+title: "Reburn analysis"
+author: "CT"
+date: "2022-11-30"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+
+This script analyzes data for reburn analyses.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(randomForest)
+library(ranger) #a faster version of the RF algorithm
+# library(pdp)# for partial dependence plots (PDPs)
+
+library(tidyverse)
+library(here)
+library(sp)
+library(sf)
+library(terra)
+library(raster)
+
+library(mgcv)
+library(tidymv)
+
+library(gridExtra)
+library(BiodiversityR)
+
+
+data_dir = readLines(here("data_dir_D.txt"), n=1)
+source(here("scripts/convenience_functions.R"))
+
+```
+
+Load reburn points with low/moderate initial CBI for analysis
+
+```{r}
+data_thin = read_csv(datadir("prelim-outputs/points/thinned_data_newsev1k.csv"))
+
+```
+
+## Explore data
+
+
+summary stats
+```{r}
+
+count_unique_reburns = data_thin %>%
+  group_by(initial_fireID, reburn_fireID, ecoregion) %>%
+  summarise(n = n()) %>%
+  group_by(ecoregion) %>%
+  summarise(n = n())
+sum(count_unique_reburns$n) #881
+
+#count sample points
+data_thin %>%
+  group_by(ecoregion) %>%
+  summarise(n = n()) 
+nrow(data_thin)
+
+
+#summary stats
+sum_stat_tbl = data_thin %>% gather(var, value, c(time_betwe, cbi_initial, cbi_reburn)) %>%
+  group_by(var, ecoregion) %>%
+  summarise(mean = round(mean(value),2),
+            SD = round(sd(value),2),
+            median = round(quantile(value, probs = 0.5),2),
+            lower.x = round(quantile(value, probs = 0.25),2),
+            upper.x = round(quantile(value, probs = 0.75),2))
+
+summary(as.factor(data_thin$time_betwe))
+
+#count high sev - 2.24
+highsev = data_thin %>% group_by(ecoregion) %>%
+  summarise(highsev = sum(cbi_reburn > 2.24),
+            prophighsev = highsev/n()*100)
+
+data_thin %>% group_by(ecoregion) %>% summarise(med_t_between = median(time_betwe) )
+  
+```
+
+### Explore correlations between variables
+```{r}
+library(purrr)
+
+#keep only numeric variables
+data_num = data_thin %>%
+  keep(is.numeric)
+
+# library(PerformanceAnalytics)
+# cor(data_num, method = "pearson", use = "complete.obs")
+# chart.Correlation(cor(data_num))
+
+weather = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, erc_02_21, vs_02_21, vpd_02_21, th_02_21, fm1000_02_, fm100_02_2, cbi_reburn, lat, long)
+
+clim_topo = data_thin %>% data.frame() %>%
+  dplyr::select(heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, lat, long)
+
+firehist = data_thin %>% data.frame() %>%
+  dplyr::select(time_betwe, count_burn, cbi_reburn, cbi_initial, lat, long)
+
+corplot = data_thin %>% data.frame() %>%
+  dplyr::select(erc_perc, vs_perc, vpd_perc, heat_load, PRISM_tmea, PRISM_ppt_, PRISM_vpdm, AET, ndvi, shrub_rebrn, tree_reburn, afg_rebrn, pfg_rebrn, TPI_1024, cbi_reburn, time_betwe, count_burn, cbi_initial, cbi_reburn)
+```
+
+Plot correlations
+```{r}
+library(GGally)
+library(corrplot)
+
+corrplot(cor(weather),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(clim_topo),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+corrplot(cor(firehist),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+
+#save corrplot
+png(height=800, width=800, file=datadir("figures/corrplot.png"))
+
+corrplot(cor(corplot),  method = 'circle', type = 'lower', insig='blank',
+         addCoef.col ='black', number.cex = 0.8, order = 'AOE', diag=FALSE)
+dev.off()
+
+#strongest correlations between weather variables, fuels variables, and lat/long
+#> selected precip and temp over AET and PRISM_vpd, and erc over fm100/1000
+```
+
+
+
+### Fit separate models for each ecoregion
+
+```{r}
+#scale numeric predictors for model fit - don't scale time between t or cbi or erc percentiles to maintain interpretation
+preds_2scale = c("heat_load", "PRISM_tmea", "PRISM_ppt_", "TPI_1024", "fm100_02_2", "th_02_21", "vpd_02_21", "erc_02_21", "PRISM_vpdm", "AET", "fm1000_02_", "ndvi", "shrub_rebrn", "tree_reburn", "afg_rebrn", "pfg_rebrn", "cbi_initial", "time_betwe", "erc_perc", "vpd_perc", "vs_perc")
+
+data_thin = data.frame(data_thin)
+
+scale_df = function(df){
+  data_scale = scale(df[(names(df) %in% preds_2scale)], scale = TRUE, center = TRUE)
+  data_scale_all = cbind(data_scale, df[!(names(df) %in% preds_2scale)])
+  return(data_scale_all)
+}
+
+data_thin_scale = data_thin %>% scale_df() %>%
+  mutate(CT_lumped_codes4 = factor(CT_lumped_codes4))
+
+#create new dfs for each ecoregion and scale each ecoregion separately 
+data_lowmod_ca = data_thin %>% filter(ecoregion == "California Coast") %>% scale_df()
+data_lowmod_nm = data_thin %>% filter(ecoregion == "Northern Mountains") %>% scale_df()
+data_lowmod_sw = data_thin %>% filter(ecoregion == "Southwest") %>% scale_df()
+data_lowmod_wm = data_thin %>% filter(ecoregion == "Western Mountains") %>% scale_df()
+
+unscale_df = data_thin %>%
+  group_by(ecoregion) %>%
+  summarise(timebetwe_sd = sd(time_betwe),
+            timebetwe_mean = mean(time_betwe),
+            cbi_initial_sd = sd(cbi_initial),
+            cbi_initial_mean = mean(cbi_initial),
+            erc_perc_sd = sd(erc_perc),
+            erc_perc_mean = mean(erc_perc),
+            vpd_perc_sd = sd(vpd_perc),
+            vpd_perc_mean = mean(vpd_perc),
+            vs_perc_sd = sd(vs_perc),
+            vs_perc_mean = mean(vs_perc))
+```
+
+
+
+Test for spatial autocorrelation
+```{r}
+library(ape)
+inv_dist = with(data_lowmod_ca, 1/dist(cbind(lat, long), diag = TRUE, upper = TRUE))
+inv_dist = as.matrix(inv_dist)
+ape::Moran.I(data_lowmod_ca$cbi_reburn, weight = inv_dist, scaled = TRUE)
+
+#observed = 0.15  - CA; 0.11 - NM; 0.17 for SW, 0.07 for wm
+# While statistically significant, there actually isn’t too much going on, though it may be enough to warrant dealing with in some fashion.
+
+```
+
+
+## Model fit with mgcv 
+>https://stat.ethz.ch/R-manual/R-devel/library/mgcv/html/gam.selection.html 
+>https://stats.stackexchange.com/questions/519433/gam-and-multiple-continuous-continuous-interactions-tensor-smooths #helpful for interpretting and fitting interactions (ti vs te vs s)
+
+>all about gams: https://m-clark.github.io/generalized-additive-models/application.html#gam-1
+
+
+
+```{r}
+
+fit_ca = bam(cbi_reburn ~ count_burn + 
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
+                  s(PRISM_tmea, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 5, bs = "cs") +
+                  s(time_betwe, k = 5, bs = "cs") +
+                  s(erc_perc, k = 5, bs = "cs") +
+                  s(vs_perc, k = 5, bs = "cs") +
+                  s(vpd_perc, k = 5, bs = "cs") +
+                  s(heat_load, k = 5, bs = "cs") +
+                  s(TPI_1024, k = 5, bs = "cs") +
+                  ti(time_betwe,PRISM_ppt_, k = 3, bs = "cs") +
+                  ti(time_betwe,PRISM_tmea, k = 3, bs = "cs") +
+                  ti(time_betwe,vpd_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,vs_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,erc_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,cbi_initial, k = 3, bs = "cs"),
+             data = data_lowmod_ca,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+fit_nm = bam(cbi_reburn ~ count_burn + 
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
+                  s(PRISM_tmea, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 5, bs = "cs") +
+                  s(time_betwe, k = 5, bs = "cs") +
+                  s(erc_perc, k = 5, bs = "cs") +
+                  s(vs_perc, k = 5, bs = "cs") +
+                  s(vpd_perc, k = 5, bs = "cs") +
+                  s(heat_load, k = 5, bs = "cs") +
+                  s(TPI_1024, k = 5, bs = "cs") +
+                  ti(time_betwe,PRISM_ppt_, k = 3, bs= "cs") +
+                  ti(time_betwe,PRISM_tmea, k = 3, bs = "cs") +
+                  ti(time_betwe,vpd_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,vs_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,erc_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,cbi_initial, k = 3, bs = "cs"),
+             data = data_lowmod_nm,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+fit_sw = bam(cbi_reburn ~ count_burn + 
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
+                  s(PRISM_tmea, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 5, bs = "cs") +
+                  s(time_betwe, k = 5, bs = "cs") +
+                  s(erc_perc, k = 5, bs = "cs") +
+                  s(vs_perc, k = 5, bs = "cs") +
+                  s(vpd_perc, k = 5, bs = "cs") +
+                  s(heat_load, k = 5, bs = "cs") +
+                  s(TPI_1024, k = 5, bs = "cs") +
+                  ti(time_betwe,PRISM_ppt_, k = 3, bs = "cs") +
+                  ti(time_betwe,PRISM_tmea, k = 3, bs = "cs") +
+                  ti(time_betwe,vpd_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,vs_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,erc_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,cbi_initial, k = 3, bs = "cs"),
+             data = data_lowmod_sw,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+
+fit_wm = bam(cbi_reburn ~ count_burn + 
+                  s(PRISM_ppt_, k = 5, bs = "cs") +
+                  s(PRISM_tmea, k = 5, bs = "cs") +
+                  s(cbi_initial, k = 5, bs = "cs") +
+                  s(time_betwe, k = 5, bs = "cs") +
+                  s(erc_perc, k = 5, bs = "cs") +
+                  s(vs_perc, k = 5, bs = "cs") +
+                  s(vpd_perc, k = 5, bs = "cs") +
+                  s(heat_load, k = 5, bs = "cs") +
+                  s(TPI_1024, k = 5, bs = "cs") +
+                  ti(time_betwe,PRISM_ppt_, k = 3, bs = "cs") +
+                  ti(time_betwe,PRISM_tmea, k = 3, bs = "cs") +
+                  ti(time_betwe,vpd_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,vs_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,erc_perc, k = 3, bs = "cs") +
+                  ti(time_betwe,cbi_initial, k = 3, bs = "cs"),
+             data = data_lowmod_wm,
+             select = T,
+             gamma = 1.4,
+             method = "REML") 
+```
+
+
+Check residuals
+```{r}
+library(mgcViz)
+#k = 5, bs = "cs"
+gam.check(fit_ca) 
+gam.check(fit_nm) 
+gam.check(fit_sw) 
+gam.check(fit_wm)
+#- still some significance in the residuals tests, but edf is below 6 so there are likely other issues with the models? thinning helped this a bit
+
+check(getViz(fit_ca))
+check(getViz(fit_nm)) 
+check(getViz(fit_sw))
+check(getViz(fit_wm))
+
+#including lat long did not improve the residuals and it is highly correlated with other predictors, so leaving out
+
+
+#check for concurvity - non-linearly related variables; Ignore interactions? 
+concurv_ca = concurvity(fit_ca, full = FALSE)  
+concurv_ca = concurv_ca$observed
+
+resid_ca = residuals(fit_ca) 
+resid_nm = residuals(fit_nm)
+resid_sw = residuals(fit_sw)
+resid_wm = residuals(fit_wm)
+
+#add residuals to dfs
+data_lowmod_ca$resids = resid_ca
+data_lowmod_nm$resids = resid_nm
+data_lowmod_sw$resids = resid_sw
+data_lowmod_wm$resids = resid_wm
+
+#plot residuals against covariates
+plot_resids_cov = function(data){
+  resid_plot = data %>%
+  dplyr::select(PRISM_ppt_, TPI_1024,
+                PRISM_tmea, cbi_initial, time_betwe,
+                erc_perc, vs_perc, vpd_perc, heat_load, resids) %>%
+  pivot_longer(-resids, names_to = "key", values_to = "value") %>% #convert to long format for fast plotting
+  ggplot(aes(x = scale(value), y = resids)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_smooth(formula = y ~ s(x, k = 6)) +
+  theme_bw(13)
+  return(resid_plot)
+}
+
+plot_resids_cov(data_lowmod_ca)
+plot_resids_cov(data_lowmod_nm)
+plot_resids_cov(data_lowmod_sw)
+plot_resids_cov(data_lowmod_wm)
+#covaraite/residual relationships look good! 
+```
+
+Test residual autocorrelation
+```{r}
+#investigate spatial autocorrelation
+library(gstat) 
+
+#project data
+project_func = function(df){
+  xy <- df[,c("long","lat")]
+  spdf <- SpatialPointsDataFrame(coords = xy, data = df,
+                             proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84
+                                               +towgs84=0,0,0"))
+  return(spdf)
+}
+
+ca_proj = project_func(data_lowmod_ca)
+sw_proj = project_func(data_lowmod_sw)
+nm_proj = project_func(data_lowmod_nm)
+wm_proj = project_func(data_lowmod_wm)
+
+vca = plot(variogram(resid_ca~1, data=ca_proj, cutoff = 5), main = "California Coast")
+vnm = plot(variogram(resid_nm~1, data=nm_proj, cutoff = 5), main = "Northern Mountains")
+vsw = plot(variogram(resid_sw~1, data=sw_proj, cutoff = 5), main = "Southwest")
+vwm = plot(variogram(resid_wm~1, data=wm_proj, cutoff = 5), main = "Western Mountains")
+
+grid.arrange(vca, vsw, vnm, vwm, nrow= 2, ncol=2)
+
+#check moran's I
+pixel.dists <- as.matrix(dist(cbind(ca_proj$long, ca_proj$lat)))
+pixel.dists.inv <- 1/pixel.dists
+diag(pixel.dists.inv) <- 0
+
+pixel.dists <- as.matrix(dist(cbind(wm_proj$long, ca_proj$lat)))
+pixel.dists.inv <- 1/pixel.dists
+diag(pixel.dists.inv) <- 0
+
+
+print(Moran.I(resid_wm,pixel.dists.inv))
+```
+
+Summarise models
+```{r}
+library(texreg) #for creating easy tables from gam output
+extract(fit_ca)
+extract(fit_wm)
+extract(fit_sw)
+extract(fit_nm)
+
+summary(fit_ca)
+
+texreg(list(fit_ca,fit_nm,fit_sw, fit_wm),
+       caption="GAM output by ecoregion",
+       dcolumn=FALSE,
+       model.names=c("California Coast","Northern Mountains","Southwest", "Western Mountains"))
+
+# wordreg(list(fit_ca,fit_nm,fit_sw, fit_wm),
+#        caption="GAM output by ecoregion",
+#        dcolumn=FALSE,
+#        model.names=c("California Coast","Northern Mountains","Southwest", "Western Mountains"),
+#        file = "GAM_table.doc")
+```
+
+Save models for plotting
+```{r}
+saveRDS(fit_ca, datadir("final-models/fit_ca_newsev1k.rds"))
+saveRDS(fit_sw, datadir("final-models/fit_sw_newsev1k.rds"))
+saveRDS(fit_nm, datadir("final-models/fit_nm_newsev1k.rds"))
+saveRDS(fit_wm, datadir("final-models/fit_wm_newsev1k.rds"))
+
+```
+
